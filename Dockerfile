@@ -2,6 +2,9 @@ FROM mcr.microsoft.com/playwright/python:v1.58.0-jammy
 
 WORKDIR /app
 
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 COPY . .
 
 RUN pip install --no-cache-dir -r requirements.txt
