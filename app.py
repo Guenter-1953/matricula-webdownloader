@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import threading
 import uuid
+import os
 from datetime import datetime, timedelta
 from downloader import run_download_job
 from utils.version import get_git_version
@@ -13,7 +14,7 @@ BUILD_DATE = "2026-03-16"
 
 
 def get_app_version_text():
-    git_version = get_git_version()
+    git_version = os.getenv("APP_VERSION", "dev")
     return f"{git_version} • {BUILD_DATE}"
 
 
