@@ -6,7 +6,6 @@ import uuid
 import os
 from datetime import datetime, timedelta
 from downloader import run_download_job
-from utils.version import get_git_version
 
 app = Flask(__name__)
 
@@ -14,8 +13,8 @@ BUILD_DATE = "2026-03-16"
 
 
 def get_app_version_text():
-    git_version = os.getenv("APP_VERSION", "dev")
-    return f"{git_version} • {BUILD_DATE}"
+    app_version = os.getenv("APP_VERSION", "dev")
+    return f"{app_version} • {BUILD_DATE}"
 
 
 DATA_DIR = Path("/app/data")
