@@ -9,6 +9,7 @@ import time
 import cv2
 import re
 import json
+import shutil
 
 
 DATA_DIR = Path("/app/data")
@@ -191,60 +192,128 @@ def get_image_info(page):
     return info
 
 
-def clean_candidate_text(text: str) -> str:
-    text = re.sub(r"\s+", " ", (text or "")).strip()
+def clean_text(text: str) -> str:
+    text = (text or "").strip()
+    text = re.sub(r"\s+", " ", text)
     return text
 
 
-def extract_book_name_candidates(page):
-    candidates = []
-
-    def add_candidate(source: str, text: str):
-        cleaned = clean_candidate_text(text)
-        if not cleaned:
-            return
-        for existing in candidates:
-            if existing["text"] == cleaned:
-                return
-        candidates.append({
-            "source": source,
-            "text": cleaned
-        })
+def extract_book_metadata(page):
+    meta = {
+        "pfarre_ort": None,
+        "signatur": None,
+        "buchtyp": None,
+        "datum_von": None,
+        "datum_bis": None,
+        "title": None,
+    }
 
     try:
-        add_candidate("page.title", page.title())
+        meta["title"] = clean_text(page.title())
     except Exception:
         pass
 
-    selectors = [
-        "h1",
-        "h2",
-        ".breadcrumb",
-        ".page-title",
-        ".book-title",
-        ".ui-breadcrumb",
-        "[class*='breadcrumb']",
-        "[class*='title']",
-    ]
-
-    for selector in selectors:
-        try:
-            texts = page.locator(selector).all_inner_texts()
-            for text in texts:
-                add_candidate(selector, text)
-        except Exception:
-            pass
-
     try:
-        current_url = page.url
-        add_candidate("page.url", current_url)
+        body_text = page.locator("body").inner_text(timeout=4000)
     except Exception:
-        pass
+        body_text = ""
 
-    return candidates
+    patterns = {
+        "pfarre_ort": r"Pfarre/Ort\s+(.+)",
+        "signatur": r"Signatur\s+(.+)",
+        "buchtyp": r"Buchtyp\s+(.+)",
+        "datum_von": r"Datum von\s+(.+)",
+        "datum_bis": r"Datum bis\s+(.+)",
+    }
+
+    for key, pattern in patterns.items():
+        m = re.search(pattern, body_text)
+        if m:
+            meta[key] = clean_text(m.group(1))
+
+    if not meta["pfarre_ort"] or not meta["signatur"] or not meta["buchtyp"]:
+        title = meta["title"] or ""
+        m = re.match(r"(.+?)\s*-\s*([^|]+)\|\s*([^|]+)\|", title)
+        if m:
+            if not meta["buchtyp"]:
+                meta["buchtyp"] = clean_text(m.group(1))
+            if not meta["signatur"]:
+                meta["signatur"] = clean_text(m.group(2))
+            if not meta["pfarre_ort"]:
+                meta["pfarre_ort"] = clean_text(m.group(3))
+
+    return meta
+
+
+def year_from_date_text(text: str | None) -> str | None:
+    if not text:
+        return None
+    m = re.search(r"(\d{4})", text)
+    if m:
+        return m.group(1)
+    return None
+
+
+def sanitize_filename_part(text: str) -> str:
+    text = clean_text(text)
+    text = text.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
+    text = text.replace("Ä", "Ae").replace("Ö", "Oe").replace("Ü", "Ue")
+    text = text.replace("ß", "ss")
+    text = re.sub(r"[^\w\-]+", "_", text)
+    text = re.sub(r"_+", "_", text)
+    text = text.strip("_")
+    return text
+
+
+def build_book_name_from_metadata(meta: dict, fallback_name: str) -> str:
+    parts = []
+
+    if meta.get("pfarre_ort"):
+        parts.append(sanitize_filename_part(meta["pfarre_ort"]))
+
+    if meta.get("signatur"):
+        parts.append(sanitize_filename_part(meta["signatur"]))
+
+    if meta.get("buchtyp"):
+        parts.append(sanitize_filename_part(meta["buchtyp"]))
+
+    jahr_von = year_from_date_text(meta.get("datum_von"))
+    jahr_bis = year_from_date_text(meta.get("datum_bis"))
+
+    if jahr_von and jahr_bis:
+        parts.append(f"{jahr_von}_{jahr_bis}")
+    elif jahr_von:
+        parts.append(jahr_von)
+    elif jahr_bis:
+        parts.append(jahr_bis)
+
+    parts = [p for p in parts if p]
+
+    if not parts:
+        return fallback_name
+
+    return "_".join(parts)
+
+
+def ensure_unique_book_name(base_name: str) -> str:
+    candidate = base_name
+    counter = 2
+
+    while (BOOKS_DIR / candidate).exists() or (PDF_DIR / f"{candidate}.pdf").exists():
+        candidate = f"{base_name}_{counter}"
+        counter += 1
+
+    return candidate
+
+
+def should_auto_rename(book_name: str) -> bool:
+    if not book_name:
+        return True
+    return bool(re.fullmatch(r"book_[a-zA-Z0-9]+", book_name))
 
 
 def run_download_job(job_id, url, book_name, save_job_status):
+    original_book_name = book_name
     book_dir = BOOKS_DIR / book_name
     pdf_path = PDF_DIR / f"{book_name}.pdf"
     debug_job_dir = DEBUG_DIR / f"{book_name}_{job_id}"
@@ -327,13 +396,25 @@ def run_download_job(job_id, url, book_name, save_job_status):
             else:
                 update("läuft", "Buch geöffnet. Gesamtseitenzahl konnte nicht erkannt werden.", 0)
 
-            first_page_candidates = extract_book_name_candidates(page)
+            meta = extract_book_metadata(page)
             debug_rows.append({
-                "stage": "book_name_candidates",
-                "url": page.url,
-                "candidates": first_page_candidates
+                "stage": "book_metadata",
+                "metadata": meta
             })
             write_debug()
+
+            if should_auto_rename(book_name):
+                generated_name = build_book_name_from_metadata(meta, book_name)
+                generated_name = ensure_unique_book_name(generated_name)
+
+                if generated_name != book_name:
+                    new_book_dir = BOOKS_DIR / generated_name
+                    if book_dir.exists() and not new_book_dir.exists():
+                        shutil.move(str(book_dir), str(new_book_dir))
+                    book_name = generated_name
+                    book_dir = new_book_dir
+                    pdf_path = PDF_DIR / f"{book_name}.pdf"
+                    update("läuft", f"Automatischer Buchname erkannt: {book_name}", 0)
 
             page_num = start_page
             saved_count = 0
