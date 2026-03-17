@@ -1,9 +1,14 @@
+version: "3"
+
 services:
-  matricula:
-    build: .
+  matricula-downloader:
+    build:
+      context: .
+      args:
+        APP_VERSION: "1.1.2"
     container_name: matricula-downloader
-    restart: unless-stopped
     ports:
-      - "5055:5000"
+      - "5000:5000"
     volumes:
-      - /volume1/docker/matricula-webdownloader/data:/app/data
+      - ./data:/app/data
+    restart: unless-stopped
