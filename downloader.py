@@ -215,32 +215,44 @@ def extract_book_metadata(page):
 
     try:
         body_text = page.locator("body").inner_text(timeout=4000)
+        body_text = body_text.replace("\t", " ")
+        body_text = re.sub(r"\s+", " ", body_text)
     except Exception:
         body_text = ""
 
-    patterns = {
-        "pfarre_ort": r"Pfarre/Ort\s+(.+)",
-        "signatur": r"Signatur\s+(.+)",
-        "buchtyp": r"Buchtyp\s+(.+)",
-        "datum_von": r"Datum von\s+(.+)",
-        "datum_bis": r"Datum bis\s+(.+)",
-    }
-
-    for key, pattern in patterns.items():
+    def find_value(label):
+        pattern = rf"{label}\s+(.*?)\s+(Pfarre/Ort|Signatur|Buchtyp|Datum von|Datum bis|$)"
         m = re.search(pattern, body_text)
         if m:
-            meta[key] = clean_text(m.group(1))
+            return clean_text(m.group(1))
+        return None
+
+    meta["pfarre_ort"] = find_value("Pfarre/Ort")
+    meta["signatur"] = find_value("Signatur")
+    meta["buchtyp"] = find_value("Buchtyp")
+    meta["datum_von"] = find_value("Datum von")
+    meta["datum_bis"] = find_value("Datum bis")
 
     if not meta["pfarre_ort"] or not meta["signatur"] or not meta["buchtyp"]:
         title = meta["title"] or ""
-        m = re.match(r"(.+?)\s*-\s*([^|]+)\|\s*([^|]+)\|", title)
-        if m:
+        parts = title.split("|")
+
+        if len(parts) >= 3:
             if not meta["buchtyp"]:
-                meta["buchtyp"] = clean_text(m.group(1))
+                first_part = clean_text(parts[0])
+                if " - " in first_part:
+                    meta["buchtyp"] = clean_text(first_part.split(" - ")[0])
+                else:
+                    meta["buchtyp"] = first_part
+
             if not meta["signatur"]:
-                meta["signatur"] = clean_text(m.group(2))
+                first_part = clean_text(parts[0])
+                m = re.search(r"-\s*([A-Za-z0-9\-]+)\s*$", first_part)
+                if m:
+                    meta["signatur"] = clean_text(m.group(1))
+
             if not meta["pfarre_ort"]:
-                meta["pfarre_ort"] = clean_text(m.group(3))
+                meta["pfarre_ort"] = clean_text(parts[1])
 
     return meta
 
@@ -313,7 +325,6 @@ def should_auto_rename(book_name: str) -> bool:
 
 
 def run_download_job(job_id, url, book_name, save_job_status):
-    original_book_name = book_name
     book_dir = BOOKS_DIR / book_name
     pdf_path = PDF_DIR / f"{book_name}.pdf"
     debug_job_dir = DEBUG_DIR / f"{book_name}_{job_id}"
