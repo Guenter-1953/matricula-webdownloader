@@ -2,7 +2,7 @@ version: "3"
 
 services:
   matricula-downloader:
-    image: ghcr.io/guenter-1953/matricula-webdownloader:sha-7fba896
+    image: ghcr.io/guenter-1953/matricula-webdownloader:sha-6a01b6b
     container_name: matricula-downloader
     ports:
       - "5055:5000"
