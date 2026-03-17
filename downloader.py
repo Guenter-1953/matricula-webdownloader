@@ -409,7 +409,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
 
             meta = extract_book_metadata(page)
             debug_rows.append({
-                "stage": "book_metadata_TEST_777",
+                "stage": "book_metadata",
                 "metadata": meta
             })
             write_debug()
