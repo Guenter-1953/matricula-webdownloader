@@ -215,10 +215,17 @@ def extract_book_metadata(page):
 
     try:
         body_text = page.locator("body").inner_text(timeout=4000)
+
+        ortsteil = None
+        m = re.search(r"\(([A-Za-zÄÖÜäöüß\s]+)\)", body_text)
+        if m:
+            ortsteil = clean_text(m.group(1))
+
         body_text = body_text.replace("\t", " ")
         body_text = re.sub(r"\s+", " ", body_text)
     except Exception:
         body_text = ""
+        ortsteil = None
 
     def find_value(label):
         pattern = rf"{label}\s+(.*?)\s+(Pfarre/Ort|Signatur|Buchtyp|Datum von|Datum bis|01-Einband|02-Titel|03-|$)"
@@ -232,6 +239,10 @@ def extract_book_metadata(page):
     meta["buchtyp"] = find_value("Buchtyp")
     meta["datum_von"] = find_value("Datum von")
     meta["datum_bis"] = find_value("Datum bis")
+
+    if ortsteil and meta.get("pfarre_ort"):
+        if ortsteil.lower() not in meta["pfarre_ort"].lower():
+            meta["pfarre_ort"] = f"{meta['pfarre_ort']} {ortsteil}"
 
     if not meta["pfarre_ort"] or not meta["signatur"] or not meta["buchtyp"]:
         title = meta["title"] or ""
