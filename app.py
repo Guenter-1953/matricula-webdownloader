@@ -189,12 +189,15 @@ def start_download():
         return redirect("/")
 
     job_id = str(uuid.uuid4())[:8]
-    book_name = request.form.get("book_name", "").strip()
+    manual_book_name = request.form.get("book_name", "").strip()
+
+    internal_book_name = manual_book_name or f"book_{job_id}"
+    display_book_name = manual_book_name or "Automatisch ermitteln..."
 
     status = {
         "job_id": job_id,
         "url": url,
-        "book_name": book_name or f"book_{job_id}",
+        "book_name": display_book_name,
         "status": "gestartet",
         "message": "Job wurde angelegt.",
         "created_at": now_iso(),
@@ -203,7 +206,7 @@ def start_download():
     save_job_status(job_id, status)
 
     def worker():
-        run_download_job(job_id, url, book_name or f"book_{job_id}", save_job_status)
+        run_download_job(job_id, url, internal_book_name, save_job_status)
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
