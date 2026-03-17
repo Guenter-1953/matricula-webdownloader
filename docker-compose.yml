@@ -10,5 +10,5 @@ services:
     ports:
       - "5055:5000"
     volumes:
-      - ./data:/app/data
+      - /volume1/docker/matricula-webdownloader/data:/app/data
     restart: unless-stopped
