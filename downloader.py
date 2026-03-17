@@ -221,7 +221,7 @@ def extract_book_metadata(page):
         body_text = ""
 
     def find_value(label):
-        pattern = rf"{label}\s+(.*?)\s+(Pfarre/Ort|Signatur|Buchtyp|Datum von|Datum bis|$)"
+        pattern = rf"{label}\s+(.*?)\s+(Pfarre/Ort|Signatur|Buchtyp|Datum von|Datum bis|01-Einband|02-Titel|03-|$)"
         m = re.search(pattern, body_text)
         if m:
             return clean_text(m.group(1))
@@ -414,18 +414,47 @@ def run_download_job(job_id, url, book_name, save_job_status):
             })
             write_debug()
 
-            if should_auto_rename(book_name):
-                generated_name = build_book_name_from_metadata(meta, book_name)
-                generated_name = ensure_unique_book_name(generated_name)
+            rename_wanted = should_auto_rename(book_name)
+            generated_name_raw = build_book_name_from_metadata(meta, book_name)
+            generated_name_unique = ensure_unique_book_name(generated_name_raw)
 
-                if generated_name != book_name:
-                    new_book_dir = BOOKS_DIR / generated_name
+            debug_rows.append({
+                "stage": "rename_debug",
+                "original_book_name": book_name,
+                "rename_wanted": rename_wanted,
+                "generated_name_raw": generated_name_raw,
+                "generated_name_unique": generated_name_unique
+            })
+            write_debug()
+
+            if rename_wanted:
+                if generated_name_unique != book_name:
+                    new_book_dir = BOOKS_DIR / generated_name_unique
                     if book_dir.exists() and not new_book_dir.exists():
                         shutil.move(str(book_dir), str(new_book_dir))
-                    book_name = generated_name
+                    book_name = generated_name_unique
                     book_dir = new_book_dir
                     pdf_path = PDF_DIR / f"{book_name}.pdf"
+
+                    debug_rows.append({
+                        "stage": "rename_applied",
+                        "new_book_name": book_name
+                    })
+                    write_debug()
+
                     update("läuft", f"Automatischer Buchname erkannt: {book_name}", 0)
+                else:
+                    debug_rows.append({
+                        "stage": "rename_skipped",
+                        "reason": "generated_name_equals_current_name"
+                    })
+                    write_debug()
+            else:
+                debug_rows.append({
+                    "stage": "rename_skipped",
+                    "reason": "manual_name_given"
+                })
+                write_debug()
 
             page_num = start_page
             saved_count = 0
