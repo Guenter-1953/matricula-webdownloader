@@ -36,10 +36,12 @@ jobs:
             type=raw,value=latest
             type=sha
 
-      - name: Image bauen und pushen
+      - name: Image ohne Cache bauen und pushen
         uses: docker/build-push-action@v6
         with:
           context: .
+          no-cache: true
+          pull: true
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
