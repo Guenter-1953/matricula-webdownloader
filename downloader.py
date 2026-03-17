@@ -11,6 +11,11 @@ import re
 import json
 import shutil
 
+try:
+    import pytesseract
+except Exception:
+    pytesseract = None
+
 
 DATA_DIR = Path("/app/data")
 BOOKS_DIR = DATA_DIR / "books"
@@ -60,7 +65,6 @@ def save_top_title_crop(source_path: Path, target_path: Path) -> bool:
 
     height, width = img.shape[:2]
 
-    # oberer Bereich der ersten Seite
     top = 0
     bottom = max(1, int(height * 0.28))
     left = int(width * 0.08)
@@ -72,6 +76,58 @@ def save_top_title_crop(source_path: Path, target_path: Path) -> bool:
 
     cv2.imwrite(str(target_path), cropped)
     return True
+
+
+def read_title_crop_ocr(path: Path) -> tuple[str | None, str | None]:
+    if pytesseract is None:
+        return None, "pytesseract_nicht_verfuegbar"
+
+    img = cv2.imread(str(path))
+    if img is None:
+        return None, "bild_nicht_lesbar"
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    gray = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)[1]
+
+    try:
+        text = pytesseract.image_to_string(gray, lang="deu")
+        text = clean_text(text)
+        if not text:
+            return None, "ocr_leer"
+        return text, None
+    except Exception as e:
+        return None, f"ocr_fehler: {e}"
+
+
+def extract_ortsteil_from_ocr_text(text: str | None) -> str | None:
+    if not text:
+        return None
+
+    candidates = []
+
+    for pattern in [
+        r"\(([A-ZÄÖÜ][A-ZÄÖÜa-zäöüß\s\-]{2,})\)",
+        r"\b([A-ZÄÖÜ]{4,})\b",
+    ]:
+        for match in re.findall(pattern, text):
+            cleaned = clean_text(match)
+            if cleaned:
+                candidates.append(cleaned)
+
+    blacklist = {
+        "TAUFBUCH", "TRAUUNG", "TOD", "KIRCHENBUCH", "MATRIKEL",
+        "DEUTSCHLAND", "FULDA"
+    }
+
+    for candidate in candidates:
+        normalized = candidate.upper()
+        if normalized in blacklist:
+            continue
+        if len(candidate) >= 4:
+            return candidate.title()
+
+    return None
 
 
 def zoom_out(page) -> None:
@@ -485,12 +541,71 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 if page_num == start_page:
                     title_crop_path = debug_job_dir / "title_crop_page_0001.png"
                     saved_crop = save_top_title_crop(raw_path, title_crop_path)
+
+                    ocr_text = None
+                    ocr_error = None
+                    ocr_ortsteil = None
+
+                    if saved_crop:
+                        ocr_text, ocr_error = read_title_crop_ocr(title_crop_path)
+                        ocr_ortsteil = extract_ortsteil_from_ocr_text(ocr_text)
+
+                        if ocr_ortsteil and meta.get("pfarre_ort"):
+                            if ocr_ortsteil.lower() not in meta["pfarre_ort"].lower():
+                                meta["pfarre_ort"] = f"{meta['pfarre_ort']} {ocr_ortsteil}"
+
                     debug_rows.append({
                         "stage": "title_crop_debug",
                         "title_crop_saved": saved_crop,
-                        "title_crop_path": str(title_crop_path)
+                        "title_crop_path": str(title_crop_path),
+                        "ocr_text": ocr_text,
+                        "ocr_error": ocr_error,
+                        "ocr_ortsteil": ocr_ortsteil,
+                        "metadata_after_ocr": meta
                     })
                     write_debug()
+
+                    rename_wanted = should_auto_rename(book_name)
+                    generated_name_raw = build_book_name_from_metadata(meta, book_name)
+                    generated_name_unique = ensure_unique_book_name(generated_name_raw)
+
+                    debug_rows.append({
+                        "stage": "rename_debug",
+                        "original_book_name": book_name,
+                        "rename_wanted": rename_wanted,
+                        "generated_name_raw": generated_name_raw,
+                        "generated_name_unique": generated_name_unique
+                    })
+                    write_debug()
+
+                    if rename_wanted:
+                        if generated_name_unique != book_name:
+                            new_book_dir = BOOKS_DIR / generated_name_unique
+                            if book_dir.exists() and not new_book_dir.exists():
+                                shutil.move(str(book_dir), str(new_book_dir))
+                            book_name = generated_name_unique
+                            book_dir = new_book_dir
+                            pdf_path = PDF_DIR / f"{book_name}.pdf"
+
+                            debug_rows.append({
+                                "stage": "rename_applied",
+                                "new_book_name": book_name
+                            })
+                            write_debug()
+
+                            update("läuft", f"Automatischer Buchname erkannt: {book_name}", 0)
+                        else:
+                            debug_rows.append({
+                                "stage": "rename_skipped",
+                                "reason": "generated_name_equals_current_name"
+                            })
+                            write_debug()
+                    else:
+                        debug_rows.append({
+                            "stage": "rename_skipped",
+                            "reason": "manual_name_given"
+                        })
+                        write_debug()
 
                 file_path = book_dir / f"page_{page_num:04d}.png"
                 save_screenshot(page, file_path)
