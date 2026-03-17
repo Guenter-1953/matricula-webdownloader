@@ -2,10 +2,7 @@ version: "3"
 
 services:
   matricula-downloader:
-    build:
-      context: .
-      args:
-        APP_VERSION: "1.1.2"
+    image: ghcr.io/guenter-1953/matricula-webdownloader:latest
     container_name: matricula-downloader
     ports:
       - "5055:5000"
