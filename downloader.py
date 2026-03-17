@@ -191,6 +191,59 @@ def get_image_info(page):
     return info
 
 
+def clean_candidate_text(text: str) -> str:
+    text = re.sub(r"\s+", " ", (text or "")).strip()
+    return text
+
+
+def extract_book_name_candidates(page):
+    candidates = []
+
+    def add_candidate(source: str, text: str):
+        cleaned = clean_candidate_text(text)
+        if not cleaned:
+            return
+        for existing in candidates:
+            if existing["text"] == cleaned:
+                return
+        candidates.append({
+            "source": source,
+            "text": cleaned
+        })
+
+    try:
+        add_candidate("page.title", page.title())
+    except Exception:
+        pass
+
+    selectors = [
+        "h1",
+        "h2",
+        ".breadcrumb",
+        ".page-title",
+        ".book-title",
+        ".ui-breadcrumb",
+        "[class*='breadcrumb']",
+        "[class*='title']",
+    ]
+
+    for selector in selectors:
+        try:
+            texts = page.locator(selector).all_inner_texts()
+            for text in texts:
+                add_candidate(selector, text)
+        except Exception:
+            pass
+
+    try:
+        current_url = page.url
+        add_candidate("page.url", current_url)
+    except Exception:
+        pass
+
+    return candidates
+
+
 def run_download_job(job_id, url, book_name, save_job_status):
     book_dir = BOOKS_DIR / book_name
     pdf_path = PDF_DIR / f"{book_name}.pdf"
@@ -273,6 +326,14 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 update("läuft", f"Buch geöffnet. Insgesamt {total_pages} Seiten erkannt.", 0)
             else:
                 update("läuft", "Buch geöffnet. Gesamtseitenzahl konnte nicht erkannt werden.", 0)
+
+            first_page_candidates = extract_book_name_candidates(page)
+            debug_rows.append({
+                "stage": "book_name_candidates",
+                "url": page.url,
+                "candidates": first_page_candidates
+            })
+            write_debug()
 
             page_num = start_page
             saved_count = 0
