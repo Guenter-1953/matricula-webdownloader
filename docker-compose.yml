@@ -1,0 +1,17 @@
+version: "3"
+
+services:
+
+  matricula-downloader:
+
+    build: .
+
+    container_name: matricula-downloader
+
+    ports:
+      - "5000:5000"
+
+    volumes:
+      - ./data:/app/data
+
+    restart: unless-stopped

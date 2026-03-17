@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Kirchenbuch Downloader</title>
+<link rel="stylesheet" href="/static/style.css?v=14">
+</head>
+<body>
+
+<div class="layout">
+
+<aside class="sidebar">
+    <div class="sidebar-inner">
+        <div>
+            <h1>Kirchenbuch Tool</h1>
+            <nav>
+                <a href="/" class="{% if active_page=='start' %}active-menu{% endif %}">Start</a>
+                <a href="/books" class="{% if active_page=='books' %}active-menu{% endif %}">Bücher</a>
+                <a href="/pdfs" class="{% if active_page=='pdfs' %}active-menu{% endif %}">PDFs</a>
+                <a href="/jobs" class="{% if active_page=='jobs' %}active-menu{% endif %}">Jobs</a>
+            </nav>
+        </div>
+
+        <div class="sidebar-version">
+            Version {{ version }}
+        </div>
+    </div>
+</aside>
+
+<main class="content">
+
+    {% if active_page == "start" %}
+
+    <section class="card">
+        <h2>Kirchenbuch herunterladen</h2>
+
+        <form action="/start" method="post" id="downloadForm">
+            <label>Kirchenbuch-Link:</label>
+            <input type="text" id="book_url" name="book_url" placeholder="https://data.matricula-online.eu/..." autocomplete="off">
+
+            <label>Name für die Ablage:</label>
+            <input type="text" id="book_name" name="book_name" placeholder="z. B. Wien_Taufen_1780_1790" autocomplete="off">
+
+            <button type="submit">Download starten</button>
+        </form>
+    </section>
+
+    <section class="card">
+        <h2>Jobs</h2>
+
+        {% if jobs %}
+        <div class="job-list">
+            {% for job in jobs %}
+            <div class="job-item status-{{ job.status|lower }}">
+                <div class="job-top">
+                    <div class="job-title">
+                        <span class="job-dot"></span>
+                        <strong>{{ job.book_name }}</strong>
+                    </div>
+                    <div class="job-state">
+                        {% if job.status|lower in ["läuft", "gestartet"] %}
+                            {% if job.pages|int > 0 %}
+                                {% if job.total_pages is defined and job.total_pages %}
+                                    Seite {{ job.pages }} / {{ job.total_pages }}
+                                {% else %}
+                                    Seite {{ job.pages }}
+                                {% endif %}
+                            {% else %}
+                                Startet
+                            {% endif %}
+                        {% elif job.status|lower == "fertig" %}
+                            fertig
+                        {% elif job.status|lower == "fehler" %}
+                            fehler
+                        {% elif job.status|lower == "abgebrochen" %}
+                            abgebrochen
+                        {% else %}
+                            {{ job.status }}
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="job-message">{{ job.message }}</div>
+
+                <div class="job-meta">
+                    <span>Seiten: {{ job.pages }}</span>
+                    <span>Job-ID: {{ job.job_id }}</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p>Noch keine Jobs vorhanden.</p>
+        {% endif %}
+    </section>
+
+    <section class="card">
+        <h2>Gespeicherte Bücher</h2>
+
+        <div style="margin-bottom:12px;padding:10px;border:2px solid #d4a100;background:#fff8cc;border-radius:8px;">
+            <strong>Suche:</strong>
+            <input
+                type="text"
+                id="bookSearch"
+                placeholder="Bücher suchen..."
+                style="margin-left:10px;padding:8px;width:100%;max-width:380px;border:1px solid #888;border-radius:6px;"
+            >
+        </div>
+
+        {% if books %}
+        <div class="book-list">
+            <ul id="bookList">
+                {% for book in books %}
+                <li data-book="{{ book.name | lower }}">
+                    <a href="/books/{{ book.name }}">{{ book.name }}</a>
+                    — Bilder: {{ book.image_count }}
+                    {% if book.pdf_exists %}
+                    — <a href="/pdf/{{ book.pdf_name }}" target="_blank">PDF öffnen</a>
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% else %}
+        <p>Noch keine Bücher gespeichert.</p>
+        {% endif %}
+    </section>
+
+    {% endif %}
+
+    {% if active_page == "books" %}
+    <section class="card">
+        <h2>Bücher</h2>
+
+        <div style="margin-bottom:12px;padding:10px;border:2px solid #d4a100;background:#fff8cc;border-radius:8px;">
+            <strong>Suche:</strong>
+            <input
+                type="text"
+                id="bookSearch"
+                placeholder="Bücher suchen..."
+                style="margin-left:10px;padding:8px;width:100%;max-width:380px;border:1px solid #888;border-radius:6px;"
+            >
+        </div>
+
+        {% if books %}
+        <div class="book-list">
+            <ul id="bookList">
+                {% for book in books %}
+                <li data-book="{{ book.name | lower }}">
+                    <a href="/books/{{ book.name }}">{{ book.name }}</a>
+                    — Bilder: {{ book.image_count }}
+                    {% if book.pdf_exists %}
+                    — <a href="/pdf/{{ book.pdf_name }}" target="_blank">PDF öffnen</a>
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% else %}
+        <p>Noch keine Bücher gespeichert.</p>
+        {% endif %}
+    </section>
+    {% endif %}
+
+    {% if active_page == "pdfs" %}
+    <section class="card">
+        <h2>PDFs</h2>
+
+        <div style="margin-bottom:12px;padding:10px;border:2px solid #d4a100;background:#fff8cc;border-radius:8px;">
+            <strong>Suche:</strong>
+            <input
+                type="text"
+                id="pdfSearch"
+                placeholder="PDF suchen..."
+                style="margin-left:10px;padding:8px;width:100%;max-width:380px;border:1px solid #888;border-radius:6px;"
+            >
+        </div>
+
+        {% if pdfs %}
+        <div class="book-list">
+            <ul id="pdfList">
+                {% for pdf in pdfs %}
+                <li data-pdf="{{ pdf.name | lower }}">
+                    <a href="/pdf/{{ pdf.name }}" target="_blank">{{ pdf.name }}</a>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% else %}
+        <p>Noch keine PDFs vorhanden.</p>
+        {% endif %}
+    </section>
+    {% endif %}
+
+    {% if active_page == "jobs" %}
+    <section class="card">
+        <h2>Jobs</h2>
+
+        {% if jobs %}
+        <div class="job-list">
+            {% for job in jobs %}
+            <div class="job-item status-{{ job.status|lower }}">
+                <div class="job-top">
+                    <div class="job-title">
+                        <span class="job-dot"></span>
+                        <strong>{{ job.book_name }}</strong>
+                    </div>
+                    <div class="job-state">
+                        {% if job.status|lower in ["läuft", "gestartet"] %}
+                            {% if job.pages|int > 0 %}
+                                {% if job.total_pages is defined and job.total_pages %}
+                                    Seite {{ job.pages }} / {{ job.total_pages }}
+                                {% else %}
+                                    Seite {{ job.pages }}
+                                {% endif %}
+                            {% else %}
+                                Startet
+                            {% endif %}
+                        {% elif job.status|lower == "fertig" %}
+                            fertig
+                        {% elif job.status|lower == "fehler" %}
+                            fehler
+                        {% elif job.status|lower == "abgebrochen" %}
+                            abgebrochen
+                        {% else %}
+                            {{ job.status }}
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="job-message">{{ job.message }}</div>
+
+                <div class="job-meta">
+                    <span>Seiten: {{ job.pages }}</span>
+                    <span>Job-ID: {{ job.job_id }}</span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p>Noch keine Jobs vorhanden.</p>
+        {% endif %}
+    </section>
+    {% endif %}
+
+</main>
+
+</div>
+
+<script>
+(function () {
+    const urlField = document.getElementById("book_url");
+    const nameField = document.getElementById("book_name");
+    const form = document.getElementById("downloadForm");
+
+    if (urlField && nameField && form) {
+        function saveFormData() {
+            localStorage.setItem("matricula_book_url", urlField.value);
+            localStorage.setItem("matricula_book_name", nameField.value);
+        }
+
+        function restoreFormData() {
+            const savedUrl = localStorage.getItem("matricula_book_url");
+            const savedName = localStorage.getItem("matricula_book_name");
+
+            if (savedUrl !== null && urlField.value === "") {
+                urlField.value = savedUrl;
+            }
+            if (savedName !== null && nameField.value === "") {
+                nameField.value = savedName;
+            }
+        }
+
+        function isTyping() {
+            const active = document.activeElement;
+            return active === urlField || active === nameField;
+        }
+
+        restoreFormData();
+
+        urlField.addEventListener("input", saveFormData);
+        nameField.addEventListener("input", saveFormData);
+
+        form.addEventListener("submit", function () {
+            localStorage.removeItem("matricula_book_url");
+            localStorage.removeItem("matricula_book_name");
+        });
+
+        setInterval(function () {
+            if (!isTyping()) {
+                location.reload();
+            }
+        }, 5000);
+    } else {
+        {% if auto_refresh %}
+        setInterval(function () {
+            location.reload();
+        }, 5000);
+        {% endif %}
+    }
+
+    function filterList(inputId, listId, attrName) {
+        const input = document.getElementById(inputId);
+        if (!input) return;
+
+        input.addEventListener("keyup", function () {
+            const value = input.value.toLowerCase();
+            const items = document.querySelectorAll("#" + listId + " li");
+
+            items.forEach(function (item) {
+                const text = (item.getAttribute(attrName) || "").toLowerCase();
+                if (text.includes(value)) {
+                    item.style.display = "";
+                } else {
+                    item.style.display = "none";
+                }
+            });
+        });
+    }
+
+    filterList("bookSearch", "bookList", "data-book");
+    filterList("pdfSearch", "pdfList", "data-pdf");
+})();
+</script>
+
+</body>
+</html>

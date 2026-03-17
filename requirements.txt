@@ -1,0 +1,7 @@
+flask
+gunicorn
+playwright
+pillow
+img2pdf
+numpy
+opencv-python-headless
