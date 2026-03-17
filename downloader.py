@@ -53,6 +53,27 @@ def auto_crop_image(path: Path) -> None:
     cv2.imwrite(str(path), cropped)
 
 
+def save_top_title_crop(source_path: Path, target_path: Path) -> bool:
+    img = cv2.imread(str(source_path))
+    if img is None:
+        return False
+
+    height, width = img.shape[:2]
+
+    # oberer Bereich der ersten Seite
+    top = 0
+    bottom = max(1, int(height * 0.28))
+    left = int(width * 0.08)
+    right = int(width * 0.92)
+
+    cropped = img[top:bottom, left:right]
+    if cropped.size == 0:
+        return False
+
+    cv2.imwrite(str(target_path), cropped)
+    return True
+
+
 def zoom_out(page) -> None:
     try:
         page.mouse.move(800, 600)
@@ -441,48 +462,6 @@ def run_download_job(job_id, url, book_name, save_job_status):
             })
             write_debug()
 
-            rename_wanted = should_auto_rename(book_name)
-            generated_name_raw = build_book_name_from_metadata(meta, book_name)
-            generated_name_unique = ensure_unique_book_name(generated_name_raw)
-
-            debug_rows.append({
-                "stage": "rename_debug",
-                "original_book_name": book_name,
-                "rename_wanted": rename_wanted,
-                "generated_name_raw": generated_name_raw,
-                "generated_name_unique": generated_name_unique
-            })
-            write_debug()
-
-            if rename_wanted:
-                if generated_name_unique != book_name:
-                    new_book_dir = BOOKS_DIR / generated_name_unique
-                    if book_dir.exists() and not new_book_dir.exists():
-                        shutil.move(str(book_dir), str(new_book_dir))
-                    book_name = generated_name_unique
-                    book_dir = new_book_dir
-                    pdf_path = PDF_DIR / f"{book_name}.pdf"
-
-                    debug_rows.append({
-                        "stage": "rename_applied",
-                        "new_book_name": book_name
-                    })
-                    write_debug()
-
-                    update("läuft", f"Automatischer Buchname erkannt: {book_name}", 0)
-                else:
-                    debug_rows.append({
-                        "stage": "rename_skipped",
-                        "reason": "generated_name_equals_current_name"
-                    })
-                    write_debug()
-            else:
-                debug_rows.append({
-                    "stage": "rename_skipped",
-                    "reason": "manual_name_given"
-                })
-                write_debug()
-
             page_num = start_page
             saved_count = 0
             last_hash = None
@@ -502,6 +481,16 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 raw_path = debug_job_dir / f"raw_page_{page_num:04d}.png"
                 page.screenshot(path=str(raw_path), full_page=True)
                 raw_hash = hash_file(raw_path)
+
+                if page_num == start_page:
+                    title_crop_path = debug_job_dir / "title_crop_page_0001.png"
+                    saved_crop = save_top_title_crop(raw_path, title_crop_path)
+                    debug_rows.append({
+                        "stage": "title_crop_debug",
+                        "title_crop_saved": saved_crop,
+                        "title_crop_path": str(title_crop_path)
+                    })
+                    write_debug()
 
                 file_path = book_dir / f"page_{page_num:04d}.png"
                 save_screenshot(page, file_path)
