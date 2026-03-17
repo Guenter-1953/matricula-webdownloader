@@ -208,28 +208,32 @@ def extract_book_metadata(page):
         "title": None,
     }
 
+    raw_body_text = ""
+    normalized_body_text = ""
+    ortsteil = None
+
     try:
         meta["title"] = clean_text(page.title())
     except Exception:
         pass
 
     try:
-        body_text = page.locator("body").inner_text(timeout=4000)
+        raw_body_text = page.locator("body").inner_text(timeout=4000)
 
-        ortsteil = None
-        m = re.search(r"\(([A-Za-zÄÖÜäöüß\s]+)\)", body_text)
+        m = re.search(r"\(([A-Za-zÄÖÜäöüß\s]+)\)", raw_body_text)
         if m:
             ortsteil = clean_text(m.group(1))
 
-        body_text = body_text.replace("\t", " ")
-        body_text = re.sub(r"\s+", " ", body_text)
+        normalized_body_text = raw_body_text.replace("\t", " ")
+        normalized_body_text = re.sub(r"\s+", " ", normalized_body_text)
     except Exception:
-        body_text = ""
+        raw_body_text = ""
+        normalized_body_text = ""
         ortsteil = None
 
     def find_value(label):
         pattern = rf"{label}\s+(.*?)\s+(Pfarre/Ort|Signatur|Buchtyp|Datum von|Datum bis|01-Einband|02-Titel|03-|$)"
-        m = re.search(pattern, body_text)
+        m = re.search(pattern, normalized_body_text)
         if m:
             return clean_text(m.group(1))
         return None
@@ -265,7 +269,15 @@ def extract_book_metadata(page):
             if not meta["pfarre_ort"]:
                 meta["pfarre_ort"] = clean_text(parts[1])
 
-    return meta
+    debug_info = {
+        "raw_body_text_excerpt": raw_body_text[:3000],
+        "normalized_body_text_excerpt": normalized_body_text[:3000],
+        "ortsteil_match": ortsteil,
+        "contains_florenberg_raw": "florenberg" in raw_body_text.lower(),
+        "contains_florenberg_normalized": "florenberg" in normalized_body_text.lower(),
+    }
+
+    return meta, debug_info
 
 
 def year_from_date_text(text: str | None) -> str | None:
@@ -418,10 +430,14 @@ def run_download_job(job_id, url, book_name, save_job_status):
             else:
                 update("läuft", "Buch geöffnet. Gesamtseitenzahl konnte nicht erkannt werden.", 0)
 
-            meta = extract_book_metadata(page)
+            meta, meta_debug = extract_book_metadata(page)
             debug_rows.append({
                 "stage": "book_metadata",
                 "metadata": meta
+            })
+            debug_rows.append({
+                "stage": "ortsteil_debug",
+                "debug": meta_debug
             })
             write_debug()
 
