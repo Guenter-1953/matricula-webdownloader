@@ -5,12 +5,17 @@ import threading
 import uuid
 from datetime import datetime, timedelta
 from downloader import run_download_job
+from utils.version import get_git_version
 
 app = Flask(__name__)
 
-APP_VERSION = "1.1.1"
 BUILD_DATE = "2026-03-16"
-APP_VERSION_TEXT = f"{APP_VERSION} • {BUILD_DATE}"
+
+
+def get_app_version_text():
+    git_version = get_git_version()
+    return f"{git_version} • {BUILD_DATE}"
+
 
 DATA_DIR = Path("/app/data")
 BOOKS_DIR = DATA_DIR / "books"
@@ -127,7 +132,7 @@ def index():
         jobs=jobs,
         pdfs=[],
         auto_refresh=True,
-        version=APP_VERSION_TEXT
+        version=get_app_version_text()
     )
 
 
@@ -142,7 +147,7 @@ def books_overview():
         jobs=[],
         pdfs=[],
         auto_refresh=False,
-        version=APP_VERSION_TEXT
+        version=get_app_version_text()
     )
 
 
@@ -157,7 +162,7 @@ def pdfs_overview():
         jobs=[],
         pdfs=pdfs,
         auto_refresh=False,
-        version=APP_VERSION_TEXT
+        version=get_app_version_text()
     )
 
 
@@ -172,7 +177,7 @@ def jobs_overview():
         jobs=jobs,
         pdfs=[],
         auto_refresh=True,
-        version=APP_VERSION_TEXT
+        version=get_app_version_text()
     )
 
 
