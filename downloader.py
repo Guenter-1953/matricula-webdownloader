@@ -52,6 +52,10 @@ def human_pause() -> int:
     return random.randint(8, 18)
 
 
+def short_pause() -> float:
+    return round(random.uniform(1.2, 3.8), 2)
+
+
 def auto_crop_image(path: Path) -> None:
     img = cv2.imread(str(path))
     if img is None:
@@ -275,6 +279,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
 
             page.goto(current_page_url)
             page.wait_for_timeout(5000)
+            time.sleep(short_pause())
             zoom_out(page)
 
             raw_path = debug_job_dir / f"raw_{page_num}.png"
@@ -344,7 +349,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     print(f"[WARN] save_job_status fehlgeschlagen: {e}")
 
             page_num += 1
-            time.sleep(1)
+            time.sleep(human_pause())
 
         book_json = book_dir / "book.json"
         if not book_json.exists():
