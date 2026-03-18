@@ -153,6 +153,26 @@ def sanitize(text: str):
     return text
 
 
+def save_book_metadata(book_dir: Path, meta: dict, source_url: str):
+    data = {
+        "country": "deutschland",
+        "bistum": "fulda",
+        "pfarre": meta.get("pfarre_ort"),
+        "signatur": meta.get("signatur"),
+        "buchtyp": meta.get("buchtyp"),
+        "jahr_von": meta.get("datum_von"),
+        "jahr_bis": meta.get("datum_bis"),
+        "source_url": source_url,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    file_path = book_dir / "book.json"
+    file_path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
+
+
 def run_download_job(job_id, url, book_name, save_job_status):
     book_dir = BOOKS_DIR / book_name
     pdf_path = PDF_DIR / f"{book_name}.pdf"
@@ -188,7 +208,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
             raw_path = debug_job_dir / f"raw_{page_num}.png"
             page.screenshot(path=str(raw_path), full_page=True)
 
-            # 🔥 OCR auf Seite 2
+            # OCR auf Seite 2
             if page_num == start_page + 1:
                 crop_path = debug_job_dir / "title.png"
                 save_top_title_crop(raw_path, crop_path)
@@ -199,7 +219,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 if ortsteil:
                     meta["pfarre_ort"] += f"_{ortsteil}"
 
-                # 🔥 rename hier
+                # rename hier
                 if should_auto_rename(book_name):
                     new_name = "_".join([
                         sanitize(meta["pfarre_ort"]),
@@ -215,11 +235,19 @@ def run_download_job(job_id, url, book_name, save_job_status):
                         book_name = new_name
                         pdf_path = PDF_DIR / f"{book_name}.pdf"
 
+                # Metadaten speichern (nach möglichem Umbenennen)
+                save_book_metadata(book_dir, meta, url)
+
             file_path = book_dir / f"page_{page_num}.png"
             save_screenshot(page, file_path)
 
             saved_count += 1
             page_num += 1
+
+        # Falls kein Rename/OCR passiert ist, trotzdem Metadaten speichern
+        book_json = book_dir / "book.json"
+        if not book_json.exists():
+            save_book_metadata(book_dir, meta, url)
 
         create_pdf(book_dir, pdf_path)
         browser.close()
