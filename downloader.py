@@ -3,7 +3,6 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 import img2pdf
-import hashlib
 import random
 import time
 import cv2
@@ -24,10 +23,7 @@ APP_DIR = BASE_DIR / "app"
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-from services.metadata_pipeline import (
-    update_book_json_with_title_ocr,
-    create_page_json_for_page,
-)
+from services.metadata_pipeline import create_page_json_for_page
 
 
 DATA_DIR = Path("/app/data")
@@ -38,14 +34,6 @@ DEBUG_DIR = DATA_DIR / "debug"
 BOOKS_DIR.mkdir(parents=True, exist_ok=True)
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def hash_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def human_pause() -> int:
@@ -75,148 +63,12 @@ def auto_crop_image(path: Path) -> None:
     cv2.imwrite(str(path), cropped)
 
 
-def save_title_crop_from_raw(source_path: Path, target_path: Path) -> bool:
-    img = cv2.imread(str(source_path))
-    if img is None:
-        return False
-
-    height, width = img.shape[:2]
-
-    top = int(height * 0.10)
-    bottom = int(height * 0.90)
-    left = int(width * 0.06)
-    right = int(width * 0.94)
-
-    cropped = img[top:bottom, left:right]
-    if cropped.size == 0:
-        return False
-
-    cv2.imwrite(str(target_path), cropped)
-    return True
-
-
-def to_gray(img):
-    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-
-def to_thresh(gray_img, threshold_value: int):
-    _, thresh = cv2.threshold(gray_img, threshold_value, 255, cv2.THRESH_BINARY)
-    return thresh
-
-
-def save_image(path: Path, img) -> None:
-    cv2.imwrite(str(path), img)
-
-
 def write_text_file(path: Path, text: str):
     path.write_text(text or "", encoding="utf-8")
 
 
-def ocr_image(img, psm: int = 6):
-    if pytesseract is None:
-        return "", "pytesseract_missing"
-
-    try:
-        config = f"--oem 3 --psm {psm}"
-        text = pytesseract.image_to_string(img, lang="deu", config=config)
-        text = re.sub(r"\s+", " ", text).strip()
-        return text, None
-    except Exception as e:
-        return "", str(e)
-
-
-def score_ocr_text(text: str) -> int:
-    if not text:
-        return 0
-
-    score = len(text)
-
-    keywords = [
-        "bistum", "fulda", "kirchenbuch", "taufe", "trauung", "tod",
-        "matricula", "edelzell", "christkönig", "engelhelms"
-    ]
-
-    lower = text.lower()
-    for keyword in keywords:
-        if keyword in lower:
-            score += 50
-
-    years = re.findall(r"\b(1[5-9]\d{2}|20\d{2})\b", text)
-    score += len(years) * 20
-
-    return score
-
-
-def run_ocr_variants(img, debug_prefix: Path):
-    results = []
-
-    gray = to_gray(img)
-    thresh_170 = to_thresh(gray, 170)
-    thresh_190 = to_thresh(gray, 190)
-
-    variants = [
-        ("raw_psm6", img, 6),
-        ("raw_psm11", img, 11),
-        ("gray_psm6", gray, 6),
-        ("gray_psm11", gray, 11),
-        ("thresh170_psm6", thresh_170, 6),
-        ("thresh170_psm11", thresh_170, 11),
-        ("thresh190_psm6", thresh_190, 6),
-        ("thresh190_psm11", thresh_190, 11),
-    ]
-
-    save_image(debug_prefix.with_name(debug_prefix.name + ".gray.png"), gray)
-    save_image(debug_prefix.with_name(debug_prefix.name + ".thresh170.png"), thresh_170)
-    save_image(debug_prefix.with_name(debug_prefix.name + ".thresh190.png"), thresh_190)
-
-    for variant_name, variant_img, psm in variants:
-        text, error = ocr_image(variant_img, psm=psm)
-        write_text_file(debug_prefix.with_name(debug_prefix.name + f".{variant_name}.ocr.txt"), text or "")
-
-        results.append({
-            "variant": variant_name,
-            "text": text,
-            "error": error,
-            "score": score_ocr_text(text),
-        })
-
-    best = max(results, key=lambda x: x["score"]) if results else {
-        "variant": "none",
-        "text": "",
-        "error": "no_variants",
-        "score": 0,
-    }
-
-    return best, results
-
-
-def extract_ortsteil_from_ocr_text(text):
-    if not text:
-        return None
-
-    lower = text.lower()
-
-    if "florenberg" in lower:
-        return "Florenberg"
-    if "edelzell" in lower:
-        return "Edelzell"
-
-    return None
-
-
-def zoom_out(page):
-    try:
-        for _ in range(3):
-            page.mouse.wheel(0, 1200)
-            page.wait_for_timeout(800)
-    except Exception:
-        pass
-
-
-def save_screenshot(page, raw_path: Path, final_path: Path):
-    page.screenshot(path=str(raw_path), full_page=True)
-    shutil.copy(str(raw_path), str(final_path))
-    auto_crop_image(final_path)
+def save_json(path: Path, data: dict):
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def create_pdf(book_dir: Path, pdf_path: Path):
@@ -245,13 +97,15 @@ def should_auto_rename(book_name: str) -> bool:
     return bool(re.fullmatch(r"book_[a-zA-Z0-9]+", book_name))
 
 
-def sanitize(text: str):
+def sanitize(text: str) -> str:
+    text = text or ""
+    text = text.replace("ß", "ss")
     text = re.sub(r"\s+", "_", text)
     text = re.sub(r"[^\w\-]", "", text)
     return text.strip("_")
 
 
-def prettify_pfarrei_slug(text: str) -> str:
+def prettify_slug(text: str) -> str:
     if not text:
         return "unbekannt"
     text = text.replace("-", "_")
@@ -271,10 +125,11 @@ def extract_book_meta_from_url(url: str) -> dict:
     }
 
     try:
+        # /de/deutschland/fulda/edelzell-engelhelms-christkoenig/1-01/
         if len(parts) >= 5:
             result["country"] = parts[1]
             result["bistum"] = parts[2]
-            result["pfarre_ort"] = prettify_pfarrei_slug(parts[3])
+            result["pfarre_ort"] = prettify_slug(parts[3])
             result["signatur"] = parts[4]
     except Exception:
         pass
@@ -282,19 +137,20 @@ def extract_book_meta_from_url(url: str) -> dict:
     return result
 
 
-def detect_book_type_from_title_ocr(ocr_text: str) -> str:
-    if not ocr_text:
-        return "Kirchenbuch"
+def normalize_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip()
 
-    lower = ocr_text.lower()
+
+def detect_book_type_from_text(text: str) -> str:
+    lower = (text or "").lower()
 
     has_taufe = "tauf" in lower or "bapt" in lower
     has_trauung = "trau" in lower or "heirat" in lower or "matrimon" in lower
     has_tod = "tod" in lower or "sterb" in lower or "mortu" in lower
 
-    types_found = sum([has_taufe, has_trauung, has_tod])
+    count = sum([has_taufe, has_trauung, has_tod])
 
-    if types_found >= 2:
+    if count >= 2:
         return "Kirchenbuch"
     if has_taufe:
         return "Taufbuch"
@@ -306,16 +162,71 @@ def detect_book_type_from_title_ocr(ocr_text: str) -> str:
     return "Kirchenbuch"
 
 
-def detect_year_range_from_ocr(ocr_text: str):
-    if not ocr_text:
-        return None, None
-
-    years = sorted({int(y) for y in re.findall(r"\b(1[5-9]\d{2}|20\d{2})\b", ocr_text)})
+def detect_year_range_from_text(text: str):
+    years = sorted({int(y) for y in re.findall(r"\b(1[5-9]\d{2}|20\d{2})\b", text or "")})
     if not years:
         return None, None
     if len(years) == 1:
         return str(years[0]), str(years[0])
     return str(years[0]), str(years[-1])
+
+
+def extract_dom_text_candidates(page) -> dict:
+    candidates = {
+        "title": "",
+        "body_text": "",
+        "h1": "",
+        "h2": "",
+        "page_title": "",
+    }
+
+    try:
+        candidates["page_title"] = normalize_whitespace(page.title())
+    except Exception:
+        pass
+
+    selectors = [
+        "body",
+        "h1",
+        "h2",
+        ".content",
+        ".page-title",
+        ".title",
+        "main",
+    ]
+
+    for selector in selectors:
+        try:
+            elements = page.locator(selector)
+            count = min(elements.count(), 3)
+            texts = []
+            for i in range(count):
+                txt = normalize_whitespace(elements.nth(i).inner_text(timeout=1000))
+                if txt:
+                    texts.append(txt)
+            joined = " | ".join(texts)
+
+            if selector == "body" and joined:
+                candidates["body_text"] = joined
+            elif selector == "h1" and joined:
+                candidates["h1"] = joined
+            elif selector == "h2" and joined:
+                candidates["h2"] = joined
+        except Exception:
+            pass
+
+    combined = " | ".join(
+        value for value in [
+            candidates["page_title"],
+            candidates["h1"],
+            candidates["h2"],
+            candidates["body_text"][:3000] if candidates["body_text"] else "",
+        ]
+        if value
+    )
+    candidates["title"] = normalize_whitespace(combined)
+
+    return candidates
 
 
 def build_initial_meta(url: str) -> dict:
@@ -329,7 +240,34 @@ def build_initial_meta(url: str) -> dict:
         "buchtyp": "Kirchenbuch",
         "datum_von": None,
         "datum_bis": None,
+        "dom_title_text": "",
     }
+
+
+def enrich_meta_from_dom(meta: dict, dom_candidates: dict) -> dict:
+    text = normalize_whitespace(
+        " | ".join([
+            dom_candidates.get("page_title", ""),
+            dom_candidates.get("h1", ""),
+            dom_candidates.get("h2", ""),
+            dom_candidates.get("body_text", "")[:4000],
+        ])
+    )
+
+    if text:
+        meta["dom_title_text"] = text
+
+    detected_type = detect_book_type_from_text(text)
+    year_from, year_to = detect_year_range_from_text(text)
+
+    if detected_type:
+        meta["buchtyp"] = detected_type
+    if year_from:
+        meta["datum_von"] = year_from
+    if year_to:
+        meta["datum_bis"] = year_to
+
+    return meta
 
 
 def save_book_metadata(book_dir: Path, meta: dict, source_url: str):
@@ -343,48 +281,10 @@ def save_book_metadata(book_dir: Path, meta: dict, source_url: str):
         "jahr_bis": meta.get("datum_bis"),
         "source_url": source_url,
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "dom_title_text": meta.get("dom_title_text", ""),
     }
 
-    file_path = book_dir / "book.json"
-    file_path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
-
-
-def enrich_book_json_with_ocr(book_dir: Path, title_ocr_text: str):
-    book_json_path = book_dir / "book.json"
-
-    if not book_json_path.exists():
-        print("[WARN] book.json fehlt für OCR-Anreicherung")
-        return
-
-    try:
-        update_book_json_with_title_ocr(str(book_json_path), title_ocr_text)
-        print("[INFO] book.json mit OCR-Metadaten angereichert")
-    except Exception as e:
-        print(f"[WARN] book.json OCR-Anreicherung fehlgeschlagen: {e}")
-
-
-def create_page_metadata(
-    book_dir: Path,
-    page_number: int,
-    image_path: Path,
-    source_url: str,
-    ocr_text: str,
-):
-    try:
-        create_page_json_for_page(
-            book_folder=str(book_dir),
-            page_number=page_number,
-            image_file=image_path.name,
-            image_path=str(image_path),
-            ocr_text=ocr_text or "",
-            source_url=source_url,
-        )
-        print(f"[INFO] page_{page_number}.json erzeugt")
-    except Exception as e:
-        print(f"[WARN] page.json konnte nicht erzeugt werden für Seite {page_number}: {e}")
+    save_json(book_dir / "book.json", data)
 
 
 def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: dict):
@@ -416,6 +316,51 @@ def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: 
     return new_dir, new_name, PDF_DIR / f"{new_name}.pdf"
 
 
+def read_page_ocr_debug(path: Path):
+    if pytesseract is None:
+        return "", "pytesseract_missing"
+
+    img = cv2.imread(str(path))
+    if img is None:
+        return "", "image_error"
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    try:
+        text = pytesseract.image_to_string(gray, lang="deu", config="--oem 3 --psm 11")
+        text = normalize_whitespace(text)
+        return text, None
+    except Exception as e:
+        return "", str(e)
+
+
+def create_page_metadata(
+    book_dir: Path,
+    page_number: int,
+    image_path: Path,
+    source_url: str,
+    ocr_text: str,
+):
+    try:
+        create_page_json_for_page(
+            book_folder=str(book_dir),
+            page_number=page_number,
+            image_file=image_path.name,
+            image_path=str(image_path),
+            ocr_text=ocr_text or "",
+            source_url=source_url,
+        )
+        print(f"[INFO] page_{page_number}.json erzeugt")
+    except Exception as e:
+        print(f"[WARN] page.json konnte nicht erzeugt werden für Seite {page_number}: {e}")
+
+
+def save_screenshot(page, raw_path: Path, final_path: Path):
+    page.screenshot(path=str(raw_path), full_page=True)
+    shutil.copy(str(raw_path), str(final_path))
+    auto_crop_image(final_path)
+
+
 def run_download_job(job_id, url, book_name, save_job_status):
     book_dir = BOOKS_DIR / book_name
     pdf_path = PDF_DIR / f"{book_name}.pdf"
@@ -436,9 +381,20 @@ def run_download_job(job_id, url, book_name, save_job_status):
         page.goto(url)
         page.wait_for_timeout(5000)
 
+        dom_candidates = extract_dom_text_candidates(page)
+        write_text_file(debug_job_dir / "dom_candidates.txt", json.dumps(dom_candidates, indent=2, ensure_ascii=False))
+        meta = enrich_meta_from_dom(meta, dom_candidates)
+
+        book_dir, book_name, pdf_path = maybe_rename_book_dir(
+            book_dir=book_dir,
+            book_name=book_name,
+            pdf_path=pdf_path,
+            meta=meta,
+        )
+        save_book_metadata(book_dir, meta, url)
+
         page_num = start_page
         saved_count = 0
-        title_ocr_done = False
 
         for _ in range(5):
             current_page_url = make_page_url(url, page_num)
@@ -454,69 +410,15 @@ def run_download_job(job_id, url, book_name, save_job_status):
 
             save_screenshot(page, raw_page_path, final_page_path)
 
-            if not title_ocr_done and page_num <= start_page + 4:
-                title_raw_crop = debug_job_dir / f"title_page_{page_num}.raw.png"
-                crop_ok = save_title_crop_from_raw(raw_page_path, title_raw_crop)
-
-                if crop_ok:
-                    title_img = cv2.imread(str(title_raw_crop))
-                    best_title, all_title_results = run_ocr_variants(
-                        title_img,
-                        debug_job_dir / f"title_page_{page_num}"
-                    )
-
-                    write_text_file(
-                        debug_job_dir / f"title_page_{page_num}.best.ocr.txt",
-                        best_title.get("text", "")
-                    )
-
-                    print(
-                        f"[INFO] Beste Titel-OCR Seite {page_num}: "
-                        f"{best_title.get('variant')} | Score={best_title.get('score')} | "
-                        f"Text={best_title.get('text', '')[:120]}"
-                    )
-
-                    title_ocr_text = best_title.get("text", "")
-                    if title_ocr_text and len(title_ocr_text) >= 20:
-                        ortsteil = extract_ortsteil_from_ocr_text(title_ocr_text)
-                        if ortsteil and ortsteil.lower() not in (meta["pfarre_ort"] or "").lower():
-                            meta["pfarre_ort"] = f"{meta['pfarre_ort']}_{ortsteil}"
-
-                        detected_type = detect_book_type_from_title_ocr(title_ocr_text)
-                        year_from, year_to = detect_year_range_from_ocr(title_ocr_text)
-
-                        meta["buchtyp"] = detected_type
-                        if year_from:
-                            meta["datum_von"] = year_from
-                        if year_to:
-                            meta["datum_bis"] = year_to
-
-                        book_dir, book_name, pdf_path = maybe_rename_book_dir(
-                            book_dir=book_dir,
-                            book_name=book_name,
-                            pdf_path=pdf_path,
-                            meta=meta,
-                        )
-
-                        save_book_metadata(book_dir, meta, url)
-                        enrich_book_json_with_ocr(book_dir, title_ocr_text)
-                        title_ocr_done = True
-
-            page_img_for_ocr = cv2.imread(str(raw_page_path))
-            best_page, all_page_results = run_ocr_variants(
-                page_img_for_ocr,
-                debug_job_dir / f"page_{page_num}"
-            )
-
-            page_ocr_text = best_page.get("text", "")
+            # Nur optionales OCR-Debug für spätere Auswertung
+            page_ocr_text, page_ocr_error = read_page_ocr_debug(raw_page_path)
             write_text_file(book_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
-            write_text_file(debug_job_dir / f"page_{page_num}.best.ocr.txt", page_ocr_text or "")
+            write_text_file(debug_job_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
 
-            print(
-                f"[INFO] Beste Seiten-OCR Seite {page_num}: "
-                f"{best_page.get('variant')} | Score={best_page.get('score')} | "
-                f"Zeichen={len(page_ocr_text or '')}"
-            )
+            if page_ocr_error:
+                print(f"[WARN] OCR-Debug Fehler Seite {page_num}: {page_ocr_error}")
+            else:
+                print(f"[INFO] OCR-Debug Zeichen Seite {page_num}: {len(page_ocr_text or '')}")
 
             create_page_metadata(
                 book_dir=book_dir,
