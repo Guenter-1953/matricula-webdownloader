@@ -14,14 +14,15 @@ services:
       - VPN_SERVICE_PROVIDER=custom
       - VPN_TYPE=wireguard
       - WIREGUARD_CONFIG_FILE=/gluetun/wireguard/wg0.conf
+      - FIREWALL_INPUT_PORTS=5000
     ports:
-      - "5055:5000"   # 👈 jetzt hier!
+      - "5055:5000"
     restart: unless-stopped
 
   matricula-downloader:
     image: ghcr.io/guenter-1953/matricula-webdownloader:sha-d8873b9
     container_name: matricula-downloader
-    network_mode: "service:gluetun"   # 👈 DAS ist der Trick!
+    network_mode: "service:gluetun"
     volumes:
       - /volume1/docker/matricula-webdownloader/data:/app/data
     restart: unless-stopped
