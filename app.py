@@ -12,8 +12,21 @@ app = Flask(__name__)
 BUILD_DATE = "2026-03-16"
 
 
+def format_app_version(raw_version: str) -> str:
+    raw_version = (raw_version or "dev").strip()
+
+    if raw_version.startswith("sha-"):
+        return raw_version[:11]
+
+    if len(raw_version) > 12:
+        return raw_version[:12]
+
+    return raw_version
+
+
 def get_app_version_text():
     app_version = os.getenv("APP_VERSION", "dev")
+    app_version = format_app_version(app_version)
     return f"{app_version} • {BUILD_DATE}"
 
 
@@ -31,16 +44,73 @@ def now_iso():
     return datetime.now().isoformat(timespec="seconds")
 
 
+def normalize_status_label(status: str) -> str:
+    value = str(status or "").strip().lower()
+
+    mapping = {
+        "started": "gestartet",
+        "starting": "gestartet",
+        "running": "läuft",
+        "finished": "fertig",
+        "done": "fertig",
+        "error": "fehler",
+        "failed": "fehler",
+        "cancelled": "abgebrochen",
+        "canceled": "abgebrochen",
+        "aborted": "abgebrochen",
+        "gestartet": "gestartet",
+        "läuft": "läuft",
+        "fertig": "fertig",
+        "fehler": "fehler",
+        "abgebrochen": "abgebrochen",
+    }
+
+    return mapping.get(value, value or "unbekannt")
+
+
+def status_css_class(status: str) -> str:
+    value = normalize_status_label(status)
+
+    mapping = {
+        "gestartet": "starting",
+        "läuft": "running",
+        "fertig": "finished",
+        "fehler": "error",
+        "abgebrochen": "cancelled",
+    }
+
+    return mapping.get(value, "unknown")
+
+
 def save_job_status(job_id, status):
     job_file = JOBS_DIR / f"{job_id}.json"
-    job_file.write_text(json.dumps(status, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    payload = dict(status or {})
+    payload["job_id"] = payload.get("job_id", job_id)
+    payload["status"] = normalize_status_label(payload.get("status"))
+    payload["status_class"] = status_css_class(payload.get("status"))
+    payload["created_at"] = payload.get("created_at", now_iso())
+    payload["pages"] = payload.get("pages", payload.get("saved_count", 0))
+    payload["saved_count"] = payload.get("saved_count", payload.get("pages", 0))
+    payload["message"] = payload.get("message", "")
+
+    job_file.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
 
 
 def load_job_status(job_id):
     job_file = JOBS_DIR / f"{job_id}.json"
     if not job_file.exists():
         return None
-    return json.loads(job_file.read_text(encoding="utf-8"))
+
+    job = json.loads(job_file.read_text(encoding="utf-8"))
+    job["status"] = normalize_status_label(job.get("status"))
+    job["status_class"] = status_css_class(job.get("status"))
+    job["pages"] = job.get("pages", job.get("saved_count", 0))
+    job["saved_count"] = job.get("saved_count", job.get("pages", 0))
+    return job
 
 
 def cleanup_old_jobs():
@@ -50,7 +120,7 @@ def cleanup_old_jobs():
         try:
             job = json.loads(job_file.read_text(encoding="utf-8"))
             created_at = job.get("created_at")
-            status = str(job.get("status", "")).lower()
+            status = normalize_status_label(job.get("status", ""))
 
             if not created_at:
                 continue
@@ -74,7 +144,7 @@ def load_all_jobs():
         try:
             job = json.loads(job_file.read_text(encoding="utf-8"))
 
-            status = str(job.get("status", "")).lower()
+            status = normalize_status_label(job.get("status", ""))
             created_at = job.get("created_at")
 
             if created_at and status in ("gestartet", "läuft"):
@@ -82,11 +152,16 @@ def load_all_jobs():
                     created_dt = datetime.fromisoformat(created_at)
                     if created_dt < cutoff:
                         job["status"] = "abgebrochen"
+                        job["status_class"] = status_css_class("abgebrochen")
                         job["message"] = "Job war zu lange aktiv und wurde als abgebrochen markiert."
                         save_job_status(job["job_id"], job)
                 except Exception:
                     pass
 
+            job["status"] = normalize_status_label(job.get("status"))
+            job["status_class"] = status_css_class(job.get("status"))
+            job["pages"] = job.get("pages", job.get("saved_count", 0))
+            job["saved_count"] = job.get("saved_count", job.get("pages", 0))
             jobs.append(job)
         except Exception:
             pass
@@ -199,9 +274,12 @@ def start_download():
         "url": url,
         "book_name": display_book_name,
         "status": "gestartet",
+        "status_class": "starting",
         "message": "Job wurde angelegt.",
         "created_at": now_iso(),
-        "pages": 0
+        "pages": 0,
+        "saved_count": 0,
+        "current_page": None,
     }
     save_job_status(job_id, status)
 
@@ -220,6 +298,13 @@ def job_status(job_id):
     if not status:
         return jsonify({"error": "Job nicht gefunden"}), 404
     return jsonify(status)
+
+
+@app.route("/api/jobs")
+def api_jobs():
+    cleanup_old_jobs()
+    jobs = load_all_jobs()
+    return jsonify(jobs)
 
 
 @app.route("/books/<book_name>")
