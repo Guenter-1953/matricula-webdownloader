@@ -137,6 +137,10 @@ def read_page_ocr(path: Path):
         return "", str(e)
 
 
+def write_text_file(path: Path, text: str):
+    path.write_text(text or "", encoding="utf-8")
+
+
 def extract_ortsteil_from_ocr_text(text):
     if not text:
         return None
@@ -192,13 +196,83 @@ def should_auto_rename(book_name: str) -> bool:
 def sanitize(text: str):
     text = re.sub(r"\s+", "_", text)
     text = re.sub(r"[^\w\-]", "", text)
-    return text
+    return text.strip("_")
+
+
+def extract_book_meta_from_url(url: str) -> dict:
+    """
+    Beispiel:
+    https://data.matricula-online.eu/de/deutschland/fulda/pilgerzell-hl-dreifaltigkeit/3-01/?pg=1
+    """
+    parsed = urlparse(url)
+    parts = [p for p in parsed.path.split("/") if p]
+
+    result = {
+        "country": None,
+        "bistum": None,
+        "pfarre_ort": None,
+        "signatur": None,
+    }
+
+    try:
+        # erwartet: /de/deutschland/fulda/pfarrei/signatur/
+        if len(parts) >= 6:
+            result["country"] = parts[1]
+            result["bistum"] = parts[2]
+            result["pfarre_ort"] = sanitize(parts[3].replace("-", "_"))
+            result["signatur"] = parts[4]
+    except Exception:
+        pass
+
+    return result
+
+
+def detect_book_type_from_title_ocr(ocr_text: str) -> str:
+    if not ocr_text:
+        return "Kirchenbuch"
+
+    lower = ocr_text.lower()
+
+    if "tauf" in lower or "bapt" in lower:
+        return "Taufbuch"
+    if "trau" in lower or "heirat" in lower or "matrimon" in lower:
+        return "Trauungsbuch"
+    if "tod" in lower or "sterb" in lower or "mortu" in lower:
+        return "Totenbuch"
+
+    return "Kirchenbuch"
+
+
+def detect_year_range_from_ocr(ocr_text: str):
+    if not ocr_text:
+        return None, None
+
+    years = sorted({int(y) for y in re.findall(r"\b(1[5-9]\d{2}|20\d{2})\b", ocr_text)})
+    if not years:
+        return None, None
+    if len(years) == 1:
+        return str(years[0]), str(years[0])
+    return str(years[0]), str(years[-1])
+
+
+def build_initial_meta(url: str) -> dict:
+    url_meta = extract_book_meta_from_url(url)
+
+    return {
+        "country": url_meta.get("country") or "deutschland",
+        "bistum": url_meta.get("bistum") or "unbekannt",
+        "pfarre_ort": url_meta.get("pfarre_ort") or "unbekannt",
+        "signatur": url_meta.get("signatur") or "unbekannt",
+        "buchtyp": "Kirchenbuch",
+        "datum_von": None,
+        "datum_bis": None,
+    }
 
 
 def save_book_metadata(book_dir: Path, meta: dict, source_url: str):
     data = {
-        "country": "deutschland",
-        "bistum": "fulda",
+        "country": meta.get("country"),
+        "bistum": meta.get("bistum"),
         "pfarre": meta.get("pfarre_ort"),
         "signatur": meta.get("signatur"),
         "buchtyp": meta.get("buchtyp"),
@@ -219,10 +293,12 @@ def enrich_book_json_with_ocr(book_dir: Path, title_ocr_text: str):
     book_json_path = book_dir / "book.json"
 
     if not book_json_path.exists():
+        print("[WARN] book.json fehlt für OCR-Anreicherung")
         return
 
     try:
         update_book_json_with_title_ocr(str(book_json_path), title_ocr_text)
+        print("[INFO] book.json mit OCR-Metadaten angereichert")
     except Exception as e:
         print(f"[WARN] book.json OCR-Anreicherung fehlgeschlagen: {e}")
 
@@ -243,8 +319,38 @@ def create_page_metadata(
             ocr_text=ocr_text or "",
             source_url=source_url,
         )
+        print(f"[INFO] page_{page_number}.json erzeugt")
     except Exception as e:
         print(f"[WARN] page.json konnte nicht erzeugt werden für Seite {page_number}: {e}")
+
+
+def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: dict):
+    if not should_auto_rename(book_name):
+        return book_dir, book_name, pdf_path
+
+    new_name_parts = [
+        sanitize(meta.get("pfarre_ort") or "unbekannt"),
+        sanitize(meta.get("signatur") or "unbekannt"),
+        sanitize(meta.get("buchtyp") or "Kirchenbuch"),
+    ]
+
+    if meta.get("datum_von") or meta.get("datum_bis"):
+        new_name_parts.append(f"{meta.get('datum_von') or 'xxxx'}_{meta.get('datum_bis') or 'xxxx'}")
+
+    new_name = "_".join([part for part in new_name_parts if part])
+    new_dir = BOOKS_DIR / new_name
+
+    if new_dir == book_dir:
+        return book_dir, book_name, pdf_path
+
+    if new_dir.exists():
+        print(f"[WARN] Zielordner existiert bereits, kein Rename: {new_dir}")
+        return book_dir, book_name, pdf_path
+
+    shutil.move(str(book_dir), str(new_dir))
+    print(f"[INFO] Buchordner umbenannt: {book_dir.name} -> {new_name}")
+
+    return new_dir, new_name, PDF_DIR / f"{new_name}.pdf"
 
 
 def run_download_job(job_id, url, book_name, save_job_status):
@@ -255,28 +361,27 @@ def run_download_job(job_id, url, book_name, save_job_status):
     book_dir.mkdir(parents=True, exist_ok=True)
     debug_job_dir.mkdir(parents=True, exist_ok=True)
 
+    meta = build_initial_meta(url)
+    start_page = get_page_number_from_url(url)
+
+    # Basis-book.json sofort anlegen
+    save_book_metadata(book_dir, meta, url)
+
     with sync_playwright() as p:
         browser = p.firefox.launch(headless=True)
         page = browser.new_page(viewport={"width": 1600, "height": 2200})
 
-        start_page = get_page_number_from_url(url)
         page.goto(url)
         page.wait_for_timeout(5000)
 
-        meta = {
-            "pfarre_ort": "Pilgerzell_Hl_Dreifaltigkeit",
-            "signatur": "2-04",
-            "buchtyp": "Taufbuch",
-            "datum_von": "1844",
-            "datum_bis": "1873"
-        }
-
         page_num = start_page
         saved_count = 0
+        title_ocr_done = False
 
         for _ in range(3):
             current_page_url = make_page_url(url, page_num)
 
+            print(f"[INFO] Lade Seite {page_num}: {current_page_url}")
             page.goto(current_page_url)
             page.wait_for_timeout(5000)
             time.sleep(short_pause())
@@ -285,47 +390,60 @@ def run_download_job(job_id, url, book_name, save_job_status):
             raw_path = debug_job_dir / f"raw_{page_num}.png"
             page.screenshot(path=str(raw_path), full_page=True)
 
-            if page_num == start_page + 1:
+            # Titelbereich auf der zweiten Seite untersuchen
+            if not title_ocr_done and page_num == start_page + 1:
                 crop_path = debug_job_dir / "title.png"
                 crop_ok = save_top_title_crop(raw_path, crop_path)
 
                 if crop_ok:
-                    ocr_text, ocr_error = read_title_crop_ocr(crop_path)
+                    title_ocr_text, title_ocr_error = read_title_crop_ocr(crop_path)
 
-                    if ocr_error:
-                        print(f"[WARN] Titel-OCR Fehler: {ocr_error}")
+                    write_text_file(debug_job_dir / "title.ocr.txt", title_ocr_text or "")
 
-                    ortsteil = extract_ortsteil_from_ocr_text(ocr_text)
+                    if title_ocr_error:
+                        print(f"[WARN] Titel-OCR Fehler: {title_ocr_error}")
+                    else:
+                        print(f"[INFO] Titel-OCR: {title_ocr_text}")
 
-                    if ortsteil:
-                        meta["pfarre_ort"] += f"_{ortsteil}"
+                    if title_ocr_text:
+                        ortsteil = extract_ortsteil_from_ocr_text(title_ocr_text)
+                        if ortsteil:
+                            meta["pfarre_ort"] = f"{meta['pfarre_ort']}_{ortsteil}"
 
-                    if should_auto_rename(book_name):
-                        new_name = "_".join([
-                            sanitize(meta["pfarre_ort"]),
-                            meta["signatur"],
-                            sanitize(meta["buchtyp"]),
-                            f"{meta['datum_von']}_{meta['datum_bis']}"
-                        ])
+                        detected_type = detect_book_type_from_title_ocr(title_ocr_text)
+                        year_from, year_to = detect_year_range_from_ocr(title_ocr_text)
 
-                        new_dir = BOOKS_DIR / new_name
-                        if not new_dir.exists():
-                            shutil.move(str(book_dir), str(new_dir))
-                            book_dir = new_dir
-                            book_name = new_name
-                            pdf_path = PDF_DIR / f"{book_name}.pdf"
+                        meta["buchtyp"] = detected_type
+                        if year_from:
+                            meta["datum_von"] = year_from
+                        if year_to:
+                            meta["datum_bis"] = year_to
 
-                    save_book_metadata(book_dir, meta, url)
+                        # nach OCR umbenennen
+                        book_dir, book_name, pdf_path = maybe_rename_book_dir(
+                            book_dir=book_dir,
+                            book_name=book_name,
+                            pdf_path=pdf_path,
+                            meta=meta,
+                        )
 
-                    if ocr_text:
-                        enrich_book_json_with_ocr(book_dir, ocr_text)
+                        # nach Rename aktuelle Metadaten schreiben
+                        save_book_metadata(book_dir, meta, url)
+                        enrich_book_json_with_ocr(book_dir, title_ocr_text)
 
+                    title_ocr_done = True
+
+            # finaler Dateipfad immer NACH möglichem Rename
             file_path = book_dir / f"page_{page_num}.png"
             save_screenshot(page, file_path)
 
             page_ocr_text, page_ocr_error = read_page_ocr(file_path)
+            write_text_file(book_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
+
             if page_ocr_error:
                 print(f"[WARN] Seiten-OCR Fehler auf Seite {page_num}: {page_ocr_error}")
+            else:
+                print(f"[INFO] Seiten-OCR Zeichen auf Seite {page_num}: {len(page_ocr_text or '')}")
 
             create_page_metadata(
                 book_dir=book_dir,
@@ -340,10 +458,12 @@ def run_download_job(job_id, url, book_name, save_job_status):
             if save_job_status:
                 try:
                     save_job_status(job_id, {
+                        "job_id": job_id,
                         "status": "running",
                         "saved_count": saved_count,
                         "current_page": page_num,
                         "book_name": book_name,
+                        "created_at": datetime.now().isoformat(timespec="seconds"),
                     })
                 except Exception as e:
                     print(f"[WARN] save_job_status fehlgeschlagen: {e}")
@@ -351,19 +471,20 @@ def run_download_job(job_id, url, book_name, save_job_status):
             page_num += 1
             time.sleep(human_pause())
 
-        book_json = book_dir / "book.json"
-        if not book_json.exists():
-            save_book_metadata(book_dir, meta, url)
+        # falls Titel-OCR gar nichts geliefert hat, trotzdem final speichern
+        save_book_metadata(book_dir, meta, url)
 
         create_pdf(book_dir, pdf_path)
 
         if save_job_status:
             try:
                 save_job_status(job_id, {
+                    "job_id": job_id,
                     "status": "finished",
                     "saved_count": saved_count,
                     "book_name": book_name,
                     "pdf_path": str(pdf_path),
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
                 })
             except Exception as e:
                 print(f"[WARN] final save_job_status fehlgeschlagen: {e}")
