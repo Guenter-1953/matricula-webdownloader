@@ -16,6 +16,11 @@ try:
 except Exception:
     pytesseract = None
 
+from app.services.metadata_pipeline import (
+    update_book_json_with_title_ocr,
+    create_page_json_for_page,
+)
+
 
 DATA_DIR = Path("/app/data")
 BOOKS_DIR = DATA_DIR / "books"
@@ -78,6 +83,12 @@ def save_top_title_crop(source_path: Path, target_path: Path) -> bool:
     return True
 
 
+def preprocess_for_ocr(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)[1]
+    return gray
+
+
 def read_title_crop_ocr(path: Path):
     if pytesseract is None:
         return None, "pytesseract_missing"
@@ -86,8 +97,7 @@ def read_title_crop_ocr(path: Path):
     if img is None:
         return None, "image_error"
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)[1]
+    gray = preprocess_for_ocr(img)
 
     try:
         text = pytesseract.image_to_string(gray, lang="deu")
@@ -97,11 +107,31 @@ def read_title_crop_ocr(path: Path):
         return None, str(e)
 
 
+def read_page_ocr(path: Path):
+    if pytesseract is None:
+        return "", "pytesseract_missing"
+
+    img = cv2.imread(str(path))
+    if img is None:
+        return "", "image_error"
+
+    gray = preprocess_for_ocr(img)
+
+    try:
+        text = pytesseract.image_to_string(gray, lang="deu")
+        text = re.sub(r"\s+", " ", text).strip()
+        return text, None
+    except Exception as e:
+        return "", str(e)
+
+
 def extract_ortsteil_from_ocr_text(text):
     if not text:
         return None
 
-    if "florenberg" in text.lower():
+    lower = text.lower()
+
+    if "florenberg" in lower:
         return "Florenberg"
 
     return None
@@ -173,6 +203,38 @@ def save_book_metadata(book_dir: Path, meta: dict, source_url: str):
     )
 
 
+def enrich_book_json_with_ocr(book_dir: Path, title_ocr_text: str):
+    book_json_path = book_dir / "book.json"
+
+    if not book_json_path.exists():
+        return
+
+    try:
+        update_book_json_with_title_ocr(str(book_json_path), title_ocr_text)
+    except Exception as e:
+        print(f"[WARN] book.json OCR-Anreicherung fehlgeschlagen: {e}")
+
+
+def create_page_metadata(
+    book_dir: Path,
+    page_number: int,
+    image_path: Path,
+    source_url: str,
+    ocr_text: str,
+):
+    try:
+        create_page_json_for_page(
+            book_folder=str(book_dir),
+            page_number=page_number,
+            image_file=image_path.name,
+            image_path=str(image_path),
+            ocr_text=ocr_text or "",
+            source_url=source_url,
+        )
+    except Exception as e:
+        print(f"[WARN] page.json konnte nicht erzeugt werden für Seite {page_number}: {e}")
+
+
 def run_download_job(job_id, url, book_name, save_job_status):
     book_dir = BOOKS_DIR / book_name
     pdf_path = PDF_DIR / f"{book_name}.pdf"
@@ -201,48 +263,84 @@ def run_download_job(job_id, url, book_name, save_job_status):
         saved_count = 0
 
         for _ in range(3):
-            page.goto(make_page_url(url, page_num))
+            current_page_url = make_page_url(url, page_num)
+
+            page.goto(current_page_url)
             page.wait_for_timeout(5000)
             zoom_out(page)
 
             raw_path = debug_job_dir / f"raw_{page_num}.png"
             page.screenshot(path=str(raw_path), full_page=True)
 
-            # OCR auf Seite 2
+            # OCR auf Seite 2: Titelbereich analysieren
             if page_num == start_page + 1:
                 crop_path = debug_job_dir / "title.png"
-                save_top_title_crop(raw_path, crop_path)
+                crop_ok = save_top_title_crop(raw_path, crop_path)
 
-                ocr_text, _ = read_title_crop_ocr(crop_path)
-                ortsteil = extract_ortsteil_from_ocr_text(ocr_text)
+                if crop_ok:
+                    ocr_text, ocr_error = read_title_crop_ocr(crop_path)
 
-                if ortsteil:
-                    meta["pfarre_ort"] += f"_{ortsteil}"
+                    if ocr_error:
+                        print(f"[WARN] Titel-OCR Fehler: {ocr_error}")
 
-                # rename hier
-                if should_auto_rename(book_name):
-                    new_name = "_".join([
-                        sanitize(meta["pfarre_ort"]),
-                        meta["signatur"],
-                        sanitize(meta["buchtyp"]),
-                        f"{meta['datum_von']}_{meta['datum_bis']}"
-                    ])
+                    ortsteil = extract_ortsteil_from_ocr_text(ocr_text)
 
-                    new_dir = BOOKS_DIR / new_name
-                    if not new_dir.exists():
-                        shutil.move(str(book_dir), str(new_dir))
-                        book_dir = new_dir
-                        book_name = new_name
-                        pdf_path = PDF_DIR / f"{book_name}.pdf"
+                    if ortsteil:
+                        meta["pfarre_ort"] += f"_{ortsteil}"
 
-                # Metadaten speichern (nach möglichem Umbenennen)
-                save_book_metadata(book_dir, meta, url)
+                    # rename hier
+                    if should_auto_rename(book_name):
+                        new_name = "_".join([
+                            sanitize(meta["pfarre_ort"]),
+                            meta["signatur"],
+                            sanitize(meta["buchtyp"]),
+                            f"{meta['datum_von']}_{meta['datum_bis']}"
+                        ])
+
+                        new_dir = BOOKS_DIR / new_name
+                        if not new_dir.exists():
+                            shutil.move(str(book_dir), str(new_dir))
+                            book_dir = new_dir
+                            book_name = new_name
+                            pdf_path = PDF_DIR / f"{book_name}.pdf"
+
+                    # Metadaten speichern
+                    save_book_metadata(book_dir, meta, url)
+
+                    # OCR-Metadaten in book.json ergänzen
+                    if ocr_text:
+                        enrich_book_json_with_ocr(book_dir, ocr_text)
 
             file_path = book_dir / f"page_{page_num}.png"
             save_screenshot(page, file_path)
 
+            page_ocr_text, page_ocr_error = read_page_ocr(file_path)
+            if page_ocr_error:
+                print(f"[WARN] Seiten-OCR Fehler auf Seite {page_num}: {page_ocr_error}")
+
+            create_page_metadata(
+                book_dir=book_dir,
+                page_number=page_num,
+                image_path=file_path,
+                source_url=current_page_url,
+                ocr_text=page_ocr_text,
+            )
+
             saved_count += 1
+
+            if save_job_status:
+                try:
+                    save_job_status(job_id, {
+                        "status": "running",
+                        "saved_count": saved_count,
+                        "current_page": page_num,
+                        "book_name": book_name,
+                    })
+                except Exception as e:
+                    print(f"[WARN] save_job_status fehlgeschlagen: {e}")
+
             page_num += 1
+            time.sleep(1)
 
         # Falls kein Rename/OCR passiert ist, trotzdem Metadaten speichern
         book_json = book_dir / "book.json"
@@ -250,4 +348,16 @@ def run_download_job(job_id, url, book_name, save_job_status):
             save_book_metadata(book_dir, meta, url)
 
         create_pdf(book_dir, pdf_path)
+
+        if save_job_status:
+            try:
+                save_job_status(job_id, {
+                    "status": "finished",
+                    "saved_count": saved_count,
+                    "book_name": book_name,
+                    "pdf_path": str(pdf_path),
+                })
+            except Exception as e:
+                print(f"[WARN] final save_job_status fehlgeschlagen: {e}")
+
         browser.close()
