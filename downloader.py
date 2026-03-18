@@ -75,17 +75,17 @@ def auto_crop_image(path: Path) -> None:
     cv2.imwrite(str(path), cropped)
 
 
-def save_top_title_crop(source_path: Path, target_path: Path) -> bool:
+def save_title_crop_from_raw(source_path: Path, target_path: Path) -> bool:
     img = cv2.imread(str(source_path))
     if img is None:
         return False
 
     height, width = img.shape[:2]
 
-    top = int(height * 0.12)
-    bottom = int(height * 0.88)
-    left = int(width * 0.08)
-    right = int(width * 0.92)
+    top = int(height * 0.10)
+    bottom = int(height * 0.90)
+    left = int(width * 0.06)
+    right = int(width * 0.94)
 
     cropped = img[top:bottom, left:right]
     if cropped.size == 0:
@@ -95,18 +95,21 @@ def save_top_title_crop(source_path: Path, target_path: Path) -> bool:
     return True
 
 
-def preprocess_for_title_ocr(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    gray = cv2.threshold(gray, 190, 255, cv2.THRESH_BINARY)[1]
-    return gray
+def to_gray(img):
+    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
 
-def preprocess_for_page_ocr(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    gray = cv2.threshold(gray, 170, 255, cv2.THRESH_BINARY)[1]
-    return gray
+def to_thresh(gray_img, threshold_value: int):
+    _, thresh = cv2.threshold(gray_img, threshold_value, 255, cv2.THRESH_BINARY)
+    return thresh
+
+
+def save_image(path: Path, img) -> None:
+    cv2.imwrite(str(path), img)
+
+
+def write_text_file(path: Path, text: str):
+    path.write_text(text or "", encoding="utf-8")
 
 
 def ocr_image(img, psm: int = 6):
@@ -122,44 +125,69 @@ def ocr_image(img, psm: int = 6):
         return "", str(e)
 
 
-def read_title_crop_ocr(path: Path):
-    if pytesseract is None:
-        return None, "pytesseract_missing"
+def score_ocr_text(text: str) -> int:
+    if not text:
+        return 0
 
-    img = cv2.imread(str(path))
-    if img is None:
-        return None, "image_error"
+    score = len(text)
 
-    processed = preprocess_for_title_ocr(img)
+    keywords = [
+        "bistum", "fulda", "kirchenbuch", "taufe", "trauung", "tod",
+        "matricula", "edelzell", "christkönig", "engelhelms"
+    ]
 
-    text, error = ocr_image(processed, psm=6)
-    if text:
-        return text, error
+    lower = text.lower()
+    for keyword in keywords:
+        if keyword in lower:
+            score += 50
 
-    text, error = ocr_image(processed, psm=11)
-    return text, error
+    years = re.findall(r"\b(1[5-9]\d{2}|20\d{2})\b", text)
+    score += len(years) * 20
 
-
-def read_page_ocr(path: Path):
-    if pytesseract is None:
-        return "", "pytesseract_missing"
-
-    img = cv2.imread(str(path))
-    if img is None:
-        return "", "image_error"
-
-    processed = preprocess_for_page_ocr(img)
-
-    text, error = ocr_image(processed, psm=6)
-    if text:
-        return text, error
-
-    text, error = ocr_image(processed, psm=11)
-    return text, error
+    return score
 
 
-def write_text_file(path: Path, text: str):
-    path.write_text(text or "", encoding="utf-8")
+def run_ocr_variants(img, debug_prefix: Path):
+    results = []
+
+    gray = to_gray(img)
+    thresh_170 = to_thresh(gray, 170)
+    thresh_190 = to_thresh(gray, 190)
+
+    variants = [
+        ("raw_psm6", img, 6),
+        ("raw_psm11", img, 11),
+        ("gray_psm6", gray, 6),
+        ("gray_psm11", gray, 11),
+        ("thresh170_psm6", thresh_170, 6),
+        ("thresh170_psm11", thresh_170, 11),
+        ("thresh190_psm6", thresh_190, 6),
+        ("thresh190_psm11", thresh_190, 11),
+    ]
+
+    save_image(debug_prefix.with_name(debug_prefix.name + ".gray.png"), gray)
+    save_image(debug_prefix.with_name(debug_prefix.name + ".thresh170.png"), thresh_170)
+    save_image(debug_prefix.with_name(debug_prefix.name + ".thresh190.png"), thresh_190)
+
+    for variant_name, variant_img, psm in variants:
+        text, error = ocr_image(variant_img, psm=psm)
+        write_text_file(debug_prefix.with_name(debug_prefix.name + f".{variant_name}.ocr.txt"), text or "")
+
+        results.append({
+            "variant": variant_name,
+            "text": text,
+            "error": error,
+            "score": score_ocr_text(text),
+        })
+
+    best = max(results, key=lambda x: x["score"]) if results else {
+        "variant": "none",
+        "text": "",
+        "error": "no_variants",
+        "score": 0,
+    }
+
+    return best, results
 
 
 def extract_ortsteil_from_ocr_text(text):
@@ -185,9 +213,10 @@ def zoom_out(page):
         pass
 
 
-def save_screenshot(page, path: Path):
-    page.screenshot(path=str(path), full_page=True)
-    auto_crop_image(path)
+def save_screenshot(page, raw_path: Path, final_path: Path):
+    page.screenshot(path=str(raw_path), full_page=True)
+    shutil.copy(str(raw_path), str(final_path))
+    auto_crop_image(final_path)
 
 
 def create_pdf(book_dir: Path, pdf_path: Path):
@@ -231,13 +260,6 @@ def prettify_pfarrei_slug(text: str) -> str:
 
 
 def extract_book_meta_from_url(url: str) -> dict:
-    """
-    Beispiel:
-    https://data.matricula-online.eu/de/deutschland/fulda/edelzell-engelhelms-christkoenig/1-01/?pg=1
-
-    parts:
-    ['de', 'deutschland', 'fulda', 'edelzell-engelhelms-christkoenig', '1-01']
-    """
     parsed = urlparse(url)
     parts = [p for p in parsed.path.split("/") if p]
 
@@ -427,22 +449,34 @@ def run_download_job(job_id, url, book_name, save_job_status):
             time.sleep(short_pause())
             zoom_out(page)
 
-            raw_path = debug_job_dir / f"raw_{page_num}.png"
-            page.screenshot(path=str(raw_path), full_page=True)
+            raw_page_path = debug_job_dir / f"raw_{page_num}.png"
+            final_page_path = book_dir / f"page_{page_num}.png"
+
+            save_screenshot(page, raw_page_path, final_page_path)
 
             if not title_ocr_done and page_num <= start_page + 4:
-                crop_path = debug_job_dir / f"title_page_{page_num}.png"
-                crop_ok = save_top_title_crop(raw_path, crop_path)
+                title_raw_crop = debug_job_dir / f"title_page_{page_num}.raw.png"
+                crop_ok = save_title_crop_from_raw(raw_page_path, title_raw_crop)
 
                 if crop_ok:
-                    title_ocr_text, title_ocr_error = read_title_crop_ocr(crop_path)
-                    write_text_file(debug_job_dir / f"title_page_{page_num}.ocr.txt", title_ocr_text or "")
+                    title_img = cv2.imread(str(title_raw_crop))
+                    best_title, all_title_results = run_ocr_variants(
+                        title_img,
+                        debug_job_dir / f"title_page_{page_num}"
+                    )
 
-                    if title_ocr_error:
-                        print(f"[WARN] Titel-OCR Fehler auf Seite {page_num}: {title_ocr_error}")
-                    else:
-                        print(f"[INFO] Titel-OCR Seite {page_num}: {title_ocr_text}")
+                    write_text_file(
+                        debug_job_dir / f"title_page_{page_num}.best.ocr.txt",
+                        best_title.get("text", "")
+                    )
 
+                    print(
+                        f"[INFO] Beste Titel-OCR Seite {page_num}: "
+                        f"{best_title.get('variant')} | Score={best_title.get('score')} | "
+                        f"Text={best_title.get('text', '')[:120]}"
+                    )
+
+                    title_ocr_text = best_title.get("text", "")
                     if title_ocr_text and len(title_ocr_text) >= 20:
                         ortsteil = extract_ortsteil_from_ocr_text(title_ocr_text)
                         if ortsteil and ortsteil.lower() not in (meta["pfarre_ort"] or "").lower():
@@ -468,21 +502,26 @@ def run_download_job(job_id, url, book_name, save_job_status):
                         enrich_book_json_with_ocr(book_dir, title_ocr_text)
                         title_ocr_done = True
 
-            file_path = book_dir / f"page_{page_num}.png"
-            save_screenshot(page, file_path)
+            page_img_for_ocr = cv2.imread(str(raw_page_path))
+            best_page, all_page_results = run_ocr_variants(
+                page_img_for_ocr,
+                debug_job_dir / f"page_{page_num}"
+            )
 
-            page_ocr_text, page_ocr_error = read_page_ocr(file_path)
+            page_ocr_text = best_page.get("text", "")
             write_text_file(book_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
+            write_text_file(debug_job_dir / f"page_{page_num}.best.ocr.txt", page_ocr_text or "")
 
-            if page_ocr_error:
-                print(f"[WARN] Seiten-OCR Fehler auf Seite {page_num}: {page_ocr_error}")
-            else:
-                print(f"[INFO] Seiten-OCR Zeichen auf Seite {page_num}: {len(page_ocr_text or '')}")
+            print(
+                f"[INFO] Beste Seiten-OCR Seite {page_num}: "
+                f"{best_page.get('variant')} | Score={best_page.get('score')} | "
+                f"Zeichen={len(page_ocr_text or '')}"
+            )
 
             create_page_metadata(
                 book_dir=book_dir,
                 page_number=page_num,
-                image_path=file_path,
+                image_path=final_page_path,
                 source_url=current_page_url,
                 ocr_text=page_ocr_text,
             )
