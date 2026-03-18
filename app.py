@@ -3,31 +3,17 @@ from pathlib import Path
 import json
 import threading
 import uuid
-import os
 from datetime import datetime, timedelta
 from downloader import run_download_job
 
 app = Flask(__name__)
 
+APP_DISPLAY_VERSION = "v1.1.0"
 BUILD_DATE = "2026-03-16"
 
 
-def format_app_version(raw_version: str) -> str:
-    raw_version = (raw_version or "dev").strip()
-
-    if raw_version.startswith("sha-"):
-        return raw_version[:11]
-
-    if len(raw_version) > 12:
-        return raw_version[:12]
-
-    return raw_version
-
-
 def get_app_version_text():
-    app_version = os.getenv("APP_VERSION", "dev")
-    app_version = format_app_version(app_version)
-    return f"{app_version} • {BUILD_DATE}"
+    return f"{APP_DISPLAY_VERSION} • {BUILD_DATE}"
 
 
 DATA_DIR = Path("/app/data")
