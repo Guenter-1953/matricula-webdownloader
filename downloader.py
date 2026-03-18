@@ -82,8 +82,8 @@ def save_top_title_crop(source_path: Path, target_path: Path) -> bool:
 
     height, width = img.shape[:2]
 
-    top = 0
-    bottom = int(height * 0.28)
+    top = int(height * 0.12)
+    bottom = int(height * 0.88)
     left = int(width * 0.08)
     right = int(width * 0.92)
 
@@ -95,10 +95,31 @@ def save_top_title_crop(source_path: Path, target_path: Path) -> bool:
     return True
 
 
-def preprocess_for_ocr(img):
+def preprocess_for_title_ocr(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)[1]
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    gray = cv2.threshold(gray, 190, 255, cv2.THRESH_BINARY)[1]
     return gray
+
+
+def preprocess_for_page_ocr(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    gray = cv2.threshold(gray, 170, 255, cv2.THRESH_BINARY)[1]
+    return gray
+
+
+def ocr_image(img, psm: int = 6):
+    if pytesseract is None:
+        return "", "pytesseract_missing"
+
+    try:
+        config = f"--oem 3 --psm {psm}"
+        text = pytesseract.image_to_string(img, lang="deu", config=config)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text, None
+    except Exception as e:
+        return "", str(e)
 
 
 def read_title_crop_ocr(path: Path):
@@ -109,14 +130,14 @@ def read_title_crop_ocr(path: Path):
     if img is None:
         return None, "image_error"
 
-    gray = preprocess_for_ocr(img)
+    processed = preprocess_for_title_ocr(img)
 
-    try:
-        text = pytesseract.image_to_string(gray, lang="deu")
-        text = re.sub(r"\s+", " ", text).strip()
-        return text, None
-    except Exception as e:
-        return None, str(e)
+    text, error = ocr_image(processed, psm=6)
+    if text:
+        return text, error
+
+    text, error = ocr_image(processed, psm=11)
+    return text, error
 
 
 def read_page_ocr(path: Path):
@@ -127,14 +148,14 @@ def read_page_ocr(path: Path):
     if img is None:
         return "", "image_error"
 
-    gray = preprocess_for_ocr(img)
+    processed = preprocess_for_page_ocr(img)
 
-    try:
-        text = pytesseract.image_to_string(gray, lang="deu")
-        text = re.sub(r"\s+", " ", text).strip()
-        return text, None
-    except Exception as e:
-        return "", str(e)
+    text, error = ocr_image(processed, psm=6)
+    if text:
+        return text, error
+
+    text, error = ocr_image(processed, psm=11)
+    return text, error
 
 
 def write_text_file(path: Path, text: str):
@@ -149,6 +170,8 @@ def extract_ortsteil_from_ocr_text(text):
 
     if "florenberg" in lower:
         return "Florenberg"
+    if "edelzell" in lower:
+        return "Edelzell"
 
     return None
 
@@ -199,10 +222,21 @@ def sanitize(text: str):
     return text.strip("_")
 
 
+def prettify_pfarrei_slug(text: str) -> str:
+    if not text:
+        return "unbekannt"
+    text = text.replace("-", "_")
+    parts = [p for p in text.split("_") if p]
+    return "_".join(part.capitalize() for part in parts)
+
+
 def extract_book_meta_from_url(url: str) -> dict:
     """
     Beispiel:
-    https://data.matricula-online.eu/de/deutschland/fulda/pilgerzell-hl-dreifaltigkeit/3-01/?pg=1
+    https://data.matricula-online.eu/de/deutschland/fulda/edelzell-engelhelms-christkoenig/1-01/?pg=1
+
+    parts:
+    ['de', 'deutschland', 'fulda', 'edelzell-engelhelms-christkoenig', '1-01']
     """
     parsed = urlparse(url)
     parts = [p for p in parsed.path.split("/") if p]
@@ -215,11 +249,10 @@ def extract_book_meta_from_url(url: str) -> dict:
     }
 
     try:
-        # erwartet: /de/deutschland/fulda/pfarrei/signatur/
-        if len(parts) >= 6:
+        if len(parts) >= 5:
             result["country"] = parts[1]
             result["bistum"] = parts[2]
-            result["pfarre_ort"] = sanitize(parts[3].replace("-", "_"))
+            result["pfarre_ort"] = prettify_pfarrei_slug(parts[3])
             result["signatur"] = parts[4]
     except Exception:
         pass
@@ -233,11 +266,19 @@ def detect_book_type_from_title_ocr(ocr_text: str) -> str:
 
     lower = ocr_text.lower()
 
-    if "tauf" in lower or "bapt" in lower:
+    has_taufe = "tauf" in lower or "bapt" in lower
+    has_trauung = "trau" in lower or "heirat" in lower or "matrimon" in lower
+    has_tod = "tod" in lower or "sterb" in lower or "mortu" in lower
+
+    types_found = sum([has_taufe, has_trauung, has_tod])
+
+    if types_found >= 2:
+        return "Kirchenbuch"
+    if has_taufe:
         return "Taufbuch"
-    if "trau" in lower or "heirat" in lower or "matrimon" in lower:
+    if has_trauung:
         return "Trauungsbuch"
-    if "tod" in lower or "sterb" in lower or "mortu" in lower:
+    if has_tod:
         return "Totenbuch"
 
     return "Kirchenbuch"
@@ -364,7 +405,6 @@ def run_download_job(job_id, url, book_name, save_job_status):
     meta = build_initial_meta(url)
     start_page = get_page_number_from_url(url)
 
-    # Basis-book.json sofort anlegen
     save_book_metadata(book_dir, meta, url)
 
     with sync_playwright() as p:
@@ -378,7 +418,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
         saved_count = 0
         title_ocr_done = False
 
-        for _ in range(3):
+        for _ in range(5):
             current_page_url = make_page_url(url, page_num)
 
             print(f"[INFO] Lade Seite {page_num}: {current_page_url}")
@@ -390,24 +430,22 @@ def run_download_job(job_id, url, book_name, save_job_status):
             raw_path = debug_job_dir / f"raw_{page_num}.png"
             page.screenshot(path=str(raw_path), full_page=True)
 
-            # Titelbereich auf der zweiten Seite untersuchen
-            if not title_ocr_done and page_num == start_page + 1:
-                crop_path = debug_job_dir / "title.png"
+            if not title_ocr_done and page_num <= start_page + 4:
+                crop_path = debug_job_dir / f"title_page_{page_num}.png"
                 crop_ok = save_top_title_crop(raw_path, crop_path)
 
                 if crop_ok:
                     title_ocr_text, title_ocr_error = read_title_crop_ocr(crop_path)
-
-                    write_text_file(debug_job_dir / "title.ocr.txt", title_ocr_text or "")
+                    write_text_file(debug_job_dir / f"title_page_{page_num}.ocr.txt", title_ocr_text or "")
 
                     if title_ocr_error:
-                        print(f"[WARN] Titel-OCR Fehler: {title_ocr_error}")
+                        print(f"[WARN] Titel-OCR Fehler auf Seite {page_num}: {title_ocr_error}")
                     else:
-                        print(f"[INFO] Titel-OCR: {title_ocr_text}")
+                        print(f"[INFO] Titel-OCR Seite {page_num}: {title_ocr_text}")
 
-                    if title_ocr_text:
+                    if title_ocr_text and len(title_ocr_text) >= 20:
                         ortsteil = extract_ortsteil_from_ocr_text(title_ocr_text)
-                        if ortsteil:
+                        if ortsteil and ortsteil.lower() not in (meta["pfarre_ort"] or "").lower():
                             meta["pfarre_ort"] = f"{meta['pfarre_ort']}_{ortsteil}"
 
                         detected_type = detect_book_type_from_title_ocr(title_ocr_text)
@@ -419,7 +457,6 @@ def run_download_job(job_id, url, book_name, save_job_status):
                         if year_to:
                             meta["datum_bis"] = year_to
 
-                        # nach OCR umbenennen
                         book_dir, book_name, pdf_path = maybe_rename_book_dir(
                             book_dir=book_dir,
                             book_name=book_name,
@@ -427,13 +464,10 @@ def run_download_job(job_id, url, book_name, save_job_status):
                             meta=meta,
                         )
 
-                        # nach Rename aktuelle Metadaten schreiben
                         save_book_metadata(book_dir, meta, url)
                         enrich_book_json_with_ocr(book_dir, title_ocr_text)
+                        title_ocr_done = True
 
-                    title_ocr_done = True
-
-            # finaler Dateipfad immer NACH möglichem Rename
             file_path = book_dir / f"page_{page_num}.png"
             save_screenshot(page, file_path)
 
@@ -471,9 +505,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
             page_num += 1
             time.sleep(human_pause())
 
-        # falls Titel-OCR gar nichts geliefert hat, trotzdem final speichern
         save_book_metadata(book_dir, meta, url)
-
         create_pdf(book_dir, pdf_path)
 
         if save_job_status:
