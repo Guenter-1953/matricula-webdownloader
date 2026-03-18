@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
 
   matricula-downloader:
-    image: ghcr.io/guenter-1953/matricula-webdownloader:sha-8617e77
+    image: ghcr.io/guenter-1953/matricula-webdownloader:sha-c0e8f3d
     container_name: matricula-downloader
     network_mode: "service:gluetun"
     volumes:
