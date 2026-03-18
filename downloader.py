@@ -10,13 +10,21 @@ import cv2
 import re
 import json
 import shutil
+import sys
 
 try:
     import pytesseract
 except Exception:
     pytesseract = None
 
-from app.services.metadata_pipeline import (
+
+BASE_DIR = Path(__file__).resolve().parent
+APP_DIR = BASE_DIR / "app"
+
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+from services.metadata_pipeline import (
     update_book_json_with_title_ocr,
     create_page_json_for_page,
 )
@@ -272,7 +280,6 @@ def run_download_job(job_id, url, book_name, save_job_status):
             raw_path = debug_job_dir / f"raw_{page_num}.png"
             page.screenshot(path=str(raw_path), full_page=True)
 
-            # OCR auf Seite 2: Titelbereich analysieren
             if page_num == start_page + 1:
                 crop_path = debug_job_dir / "title.png"
                 crop_ok = save_top_title_crop(raw_path, crop_path)
@@ -288,7 +295,6 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     if ortsteil:
                         meta["pfarre_ort"] += f"_{ortsteil}"
 
-                    # rename hier
                     if should_auto_rename(book_name):
                         new_name = "_".join([
                             sanitize(meta["pfarre_ort"]),
@@ -304,10 +310,8 @@ def run_download_job(job_id, url, book_name, save_job_status):
                             book_name = new_name
                             pdf_path = PDF_DIR / f"{book_name}.pdf"
 
-                    # Metadaten speichern
                     save_book_metadata(book_dir, meta, url)
 
-                    # OCR-Metadaten in book.json ergänzen
                     if ocr_text:
                         enrich_book_json_with_ocr(book_dir, ocr_text)
 
@@ -342,7 +346,6 @@ def run_download_job(job_id, url, book_name, save_job_status):
             page_num += 1
             time.sleep(1)
 
-        # Falls kein Rename/OCR passiert ist, trotzdem Metadaten speichern
         book_json = book_dir / "book.json"
         if not book_json.exists():
             save_book_metadata(book_dir, meta, url)
