@@ -3,7 +3,156 @@
 <head>
 <meta charset="UTF-8">
 <title>Kirchenbuch Downloader</title>
-<link rel="stylesheet" href="/static/style.css?v=14">
+<link rel="stylesheet" href="/static/style.css?v=15">
+<style>
+.job-item {
+    position: relative;
+    border-left: 8px solid #cfcfcf;
+    transition: all 0.25s ease;
+}
+
+.job-item.status-gestartet,
+.job-item.status-starting {
+    border-left-color: #e0a800;
+}
+
+.job-item.status-läuft,
+.job-item.status-running {
+    border-left-color: #4aa3df;
+}
+
+.job-item.status-fertig,
+.job-item.status-finished {
+    border-left-color: #2e9b52;
+}
+
+.job-item.status-fehler,
+.job-item.status-error {
+    border-left-color: #c0392b;
+}
+
+.job-item.status-abgebrochen,
+.job-item.status-cancelled {
+    border-left-color: #7f8c8d;
+}
+
+.job-dot {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #bdbdbd;
+    margin-right: 10px;
+    vertical-align: middle;
+}
+
+.job-item.status-gestartet .job-dot,
+.job-item.status-starting .job-dot {
+    background: #e0a800;
+    animation: pulseSoft 1.4s infinite;
+}
+
+.job-item.status-läuft .job-dot,
+.job-item.status-running .job-dot {
+    background: #4aa3df;
+    animation: pulseStrong 1s infinite;
+}
+
+.job-item.status-fertig .job-dot,
+.job-item.status-finished .job-dot {
+    background: #2e9b52;
+}
+
+.job-item.status-fehler .job-dot,
+.job-item.status-error .job-dot {
+    background: #c0392b;
+}
+
+.job-item.status-abgebrochen .job-dot,
+.job-item.status-cancelled .job-dot {
+    background: #7f8c8d;
+}
+
+.job-state {
+    font-weight: 700;
+    text-transform: lowercase;
+}
+
+.job-item.status-gestartet .job-state,
+.job-item.status-starting .job-state {
+    color: #e0a800;
+    animation: blinkText 1.4s infinite;
+}
+
+.job-item.status-läuft .job-state,
+.job-item.status-running .job-state {
+    color: #2a84c9;
+    animation: blinkText 1s infinite;
+}
+
+.job-item.status-fertig .job-state,
+.job-item.status-finished .job-state {
+    color: #2e9b52;
+}
+
+.job-item.status-fehler .job-state,
+.job-item.status-error .job-state {
+    color: #c0392b;
+}
+
+.job-item.status-abgebrochen .job-state,
+.job-item.status-cancelled .job-state {
+    color: #7f8c8d;
+}
+
+.sidebar-version {
+    line-height: 1.45;
+    word-break: break-word;
+}
+
+.version-label {
+    font-weight: 700;
+    display: block;
+    margin-bottom: 4px;
+}
+
+.version-hash {
+    display: block;
+}
+
+.version-date {
+    display: block;
+    opacity: 0.9;
+}
+
+.job-progress {
+    margin-top: 8px;
+    font-size: 0.95rem;
+    color: #444;
+}
+
+.job-current-page {
+    margin-left: 12px;
+}
+
+@keyframes pulseSoft {
+    0% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.15); opacity: 0.65; }
+    100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes pulseStrong {
+    0% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.22); opacity: 0.5; }
+    100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes blinkText {
+    0% { opacity: 1; }
+    50% { opacity: 0.45; }
+    100% { opacity: 1; }
+}
+</style>
 </head>
 <body>
 
@@ -22,7 +171,13 @@
         </div>
 
         <div class="sidebar-version">
-            Version {{ version }}
+            <span class="version-label">Version</span>
+            {% if "•" in version %}
+                <span class="version-hash">{{ version.split("•")[0].strip() }}</span>
+                <span class="version-date">• {{ version.split("•")[1].strip() }}</span>
+            {% else %}
+                <span class="version-hash">{{ version }}</span>
+            {% endif %}
         </div>
     </div>
 </aside>
@@ -48,50 +203,38 @@
     <section class="card">
         <h2>Jobs</h2>
 
-        {% if jobs %}
-        <div class="job-list">
-            {% for job in jobs %}
-            <div class="job-item status-{{ job.status|lower }}">
-                <div class="job-top">
-                    <div class="job-title">
-                        <span class="job-dot"></span>
-                        <strong>{{ job.book_name }}</strong>
-                    </div>
-                    <div class="job-state">
-                        {% if job.status|lower in ["läuft", "gestartet"] %}
-                            {% if job.pages|int > 0 %}
-                                {% if job.total_pages is defined and job.total_pages %}
-                                    Seite {{ job.pages }} / {{ job.total_pages }}
-                                {% else %}
-                                    Seite {{ job.pages }}
-                                {% endif %}
-                            {% else %}
-                                Startet
-                            {% endif %}
-                        {% elif job.status|lower == "fertig" %}
-                            fertig
-                        {% elif job.status|lower == "fehler" %}
-                            fehler
-                        {% elif job.status|lower == "abgebrochen" %}
-                            abgebrochen
-                        {% else %}
+        <div class="job-list" id="jobList">
+            {% if jobs %}
+                {% for job in jobs %}
+                <div class="job-item status-{{ job.status|lower|replace(' ', '-') }}">
+                    <div class="job-top">
+                        <div class="job-title">
+                            <span class="job-dot"></span>
+                            <strong>{{ job.book_name }}</strong>
+                        </div>
+                        <div class="job-state">
                             {{ job.status }}
+                        </div>
+                    </div>
+
+                    <div class="job-message">{{ job.message }}</div>
+
+                    <div class="job-progress">
+                        <span>Seiten: {{ job.pages or job.saved_count or 0 }}</span>
+                        {% if job.current_page %}
+                        <span class="job-current-page">Aktuelle Seite: {{ job.current_page }}</span>
                         {% endif %}
                     </div>
-                </div>
 
-                <div class="job-message">{{ job.message }}</div>
-
-                <div class="job-meta">
-                    <span>Seiten: {{ job.pages }}</span>
-                    <span>Job-ID: {{ job.job_id }}</span>
+                    <div class="job-meta">
+                        <span>Job-ID: {{ job.job_id }}</span>
+                    </div>
                 </div>
-            </div>
-            {% endfor %}
+                {% endfor %}
+            {% else %}
+                <p id="noJobsText">Noch keine Jobs vorhanden.</p>
+            {% endif %}
         </div>
-        {% else %}
-        <p>Noch keine Jobs vorhanden.</p>
-        {% endif %}
     </section>
 
     <section class="card">
@@ -196,50 +339,38 @@
     <section class="card">
         <h2>Jobs</h2>
 
-        {% if jobs %}
-        <div class="job-list">
-            {% for job in jobs %}
-            <div class="job-item status-{{ job.status|lower }}">
-                <div class="job-top">
-                    <div class="job-title">
-                        <span class="job-dot"></span>
-                        <strong>{{ job.book_name }}</strong>
-                    </div>
-                    <div class="job-state">
-                        {% if job.status|lower in ["läuft", "gestartet"] %}
-                            {% if job.pages|int > 0 %}
-                                {% if job.total_pages is defined and job.total_pages %}
-                                    Seite {{ job.pages }} / {{ job.total_pages }}
-                                {% else %}
-                                    Seite {{ job.pages }}
-                                {% endif %}
-                            {% else %}
-                                Startet
-                            {% endif %}
-                        {% elif job.status|lower == "fertig" %}
-                            fertig
-                        {% elif job.status|lower == "fehler" %}
-                            fehler
-                        {% elif job.status|lower == "abgebrochen" %}
-                            abgebrochen
-                        {% else %}
+        <div class="job-list" id="jobList">
+            {% if jobs %}
+                {% for job in jobs %}
+                <div class="job-item status-{{ job.status|lower|replace(' ', '-') }}">
+                    <div class="job-top">
+                        <div class="job-title">
+                            <span class="job-dot"></span>
+                            <strong>{{ job.book_name }}</strong>
+                        </div>
+                        <div class="job-state">
                             {{ job.status }}
+                        </div>
+                    </div>
+
+                    <div class="job-message">{{ job.message }}</div>
+
+                    <div class="job-progress">
+                        <span>Seiten: {{ job.pages or job.saved_count or 0 }}</span>
+                        {% if job.current_page %}
+                        <span class="job-current-page">Aktuelle Seite: {{ job.current_page }}</span>
                         {% endif %}
                     </div>
-                </div>
 
-                <div class="job-message">{{ job.message }}</div>
-
-                <div class="job-meta">
-                    <span>Seiten: {{ job.pages }}</span>
-                    <span>Job-ID: {{ job.job_id }}</span>
+                    <div class="job-meta">
+                        <span>Job-ID: {{ job.job_id }}</span>
+                    </div>
                 </div>
-            </div>
-            {% endfor %}
+                {% endfor %}
+            {% else %}
+                <p id="noJobsText">Noch keine Jobs vorhanden.</p>
+            {% endif %}
         </div>
-        {% else %}
-        <p>Noch keine Jobs vorhanden.</p>
-        {% endif %}
     </section>
     {% endif %}
 
@@ -253,31 +384,33 @@
     const nameField = document.getElementById("book_name");
     const form = document.getElementById("downloadForm");
 
+    function saveFormData() {
+        if (!urlField || !nameField) return;
+        localStorage.setItem("matricula_book_url", urlField.value);
+        localStorage.setItem("matricula_book_name", nameField.value);
+    }
+
+    function restoreFormData() {
+        if (!urlField || !nameField) return;
+
+        const savedUrl = localStorage.getItem("matricula_book_url");
+        const savedName = localStorage.getItem("matricula_book_name");
+
+        if (savedUrl !== null && urlField.value === "") {
+            urlField.value = savedUrl;
+        }
+        if (savedName !== null && nameField.value === "") {
+            nameField.value = savedName;
+        }
+    }
+
+    function isTyping() {
+        const active = document.activeElement;
+        return active === urlField || active === nameField;
+    }
+
     if (urlField && nameField && form) {
-        function saveFormData() {
-            localStorage.setItem("matricula_book_url", urlField.value);
-            localStorage.setItem("matricula_book_name", nameField.value);
-        }
-
-        function restoreFormData() {
-            const savedUrl = localStorage.getItem("matricula_book_url");
-            const savedName = localStorage.getItem("matricula_book_name");
-
-            if (savedUrl !== null && urlField.value === "") {
-                urlField.value = savedUrl;
-            }
-            if (savedName !== null && nameField.value === "") {
-                nameField.value = savedName;
-            }
-        }
-
-        function isTyping() {
-            const active = document.activeElement;
-            return active === urlField || active === nameField;
-        }
-
         restoreFormData();
-
         urlField.addEventListener("input", saveFormData);
         nameField.addEventListener("input", saveFormData);
 
@@ -285,18 +418,6 @@
             localStorage.removeItem("matricula_book_url");
             localStorage.removeItem("matricula_book_name");
         });
-
-        setInterval(function () {
-            if (!isTyping()) {
-                location.reload();
-            }
-        }, 5000);
-    } else {
-        {% if auto_refresh %}
-        setInterval(function () {
-            location.reload();
-        }, 5000);
-        {% endif %}
     }
 
     function filterList(inputId, listId, attrName) {
@@ -309,17 +430,95 @@
 
             items.forEach(function (item) {
                 const text = (item.getAttribute(attrName) || "").toLowerCase();
-                if (text.includes(value)) {
-                    item.style.display = "";
-                } else {
-                    item.style.display = "none";
-                }
+                item.style.display = text.includes(value) ? "" : "none";
             });
         });
     }
 
     filterList("bookSearch", "bookList", "data-book");
     filterList("pdfSearch", "pdfList", "data-pdf");
+
+    function escapeHtml(text) {
+        return String(text || "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function normalizeStatusClass(status) {
+        const value = String(status || "").toLowerCase();
+
+        if (value === "gestartet" || value === "starting") return "gestartet";
+        if (value === "läuft" || value === "laeuft" || value === "running") return "läuft";
+        if (value === "fertig" || value === "finished") return "fertig";
+        if (value === "fehler" || value === "error") return "fehler";
+        if (value === "abgebrochen" || value === "cancelled" || value === "canceled") return "abgebrochen";
+
+        return value || "unbekannt";
+    }
+
+    function renderJobs(jobs) {
+        const containers = document.querySelectorAll("#jobList");
+        if (!containers.length) return;
+
+        containers.forEach(function (container) {
+            if (!jobs || !jobs.length) {
+                container.innerHTML = '<p id="noJobsText">Noch keine Jobs vorhanden.</p>';
+                return;
+            }
+
+            container.innerHTML = jobs.map(function (job) {
+                const status = normalizeStatusClass(job.status);
+                const pages = job.pages ?? job.saved_count ?? 0;
+                const currentPage = job.current_page ? `<span class="job-current-page">Aktuelle Seite: ${escapeHtml(job.current_page)}</span>` : "";
+
+                return `
+                    <div class="job-item status-${escapeHtml(status)}">
+                        <div class="job-top">
+                            <div class="job-title">
+                                <span class="job-dot"></span>
+                                <strong>${escapeHtml(job.book_name || "Unbenannter Job")}</strong>
+                            </div>
+                            <div class="job-state">${escapeHtml(job.status || "")}</div>
+                        </div>
+
+                        <div class="job-message">${escapeHtml(job.message || "")}</div>
+
+                        <div class="job-progress">
+                            <span>Seiten: ${escapeHtml(pages)}</span>
+                            ${currentPage}
+                        </div>
+
+                        <div class="job-meta">
+                            <span>Job-ID: ${escapeHtml(job.job_id || "")}</span>
+                        </div>
+                    </div>
+                `;
+            }).join("");
+        });
+    }
+
+    async function refreshJobs() {
+        try {
+            const response = await fetch("/api/jobs", { cache: "no-store" });
+            if (!response.ok) return;
+
+            const jobs = await response.json();
+            renderJobs(jobs);
+        } catch (err) {
+            console.warn("Job-Refresh fehlgeschlagen", err);
+        }
+    }
+
+    {% if auto_refresh %}
+    setInterval(function () {
+        if (!isTyping()) {
+            refreshJobs();
+        }
+    }, 2000);
+    {% endif %}
 })();
 </script>
 
