@@ -36,12 +36,15 @@ PDF_DIR.mkdir(parents=True, exist_ok=True)
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def human_pause() -> int:
-    return random.randint(8, 18)
+DEBUG_PAGE_COUNT = 3
+
+
+def human_pause() -> float:
+    return round(random.uniform(1.0, 2.0), 2)
 
 
 def short_pause() -> float:
-    return round(random.uniform(1.2, 3.8), 2)
+    return round(random.uniform(0.4, 0.9), 2)
 
 
 def auto_crop_image(path: Path) -> None:
@@ -125,7 +128,6 @@ def extract_book_meta_from_url(url: str) -> dict:
     }
 
     try:
-        # /de/deutschland/fulda/edelzell-engelhelms-christkoenig/1-01/
         if len(parts) >= 5:
             result["country"] = parts[1]
             result["bistum"] = parts[2]
@@ -201,7 +203,7 @@ def extract_dom_text_candidates(page) -> dict:
             count = min(elements.count(), 3)
             texts = []
             for i in range(count):
-                txt = normalize_whitespace(elements.nth(i).inner_text(timeout=1000))
+                txt = normalize_whitespace(elements.nth(i).inner_text(timeout=700))
                 if txt:
                     texts.append(txt)
             joined = " | ".join(texts)
@@ -361,6 +363,31 @@ def save_screenshot(page, raw_path: Path, final_path: Path):
     auto_crop_image(final_path)
 
 
+def update_status(save_job_status, job_id, book_name, status, message, saved_count=0, current_page=None, pdf_path=None):
+    if not save_job_status:
+        return
+
+    payload = {
+        "job_id": job_id,
+        "book_name": book_name,
+        "status": status,
+        "message": message,
+        "saved_count": saved_count,
+        "pages": saved_count,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    if current_page is not None:
+        payload["current_page"] = current_page
+    if pdf_path is not None:
+        payload["pdf_path"] = str(pdf_path)
+
+    try:
+        save_job_status(job_id, payload)
+    except Exception as e:
+        print(f"[WARN] save_job_status fehlgeschlagen: {e}")
+
+
 def run_download_job(job_id, url, book_name, save_job_status):
     book_dir = BOOKS_DIR / book_name
     pdf_path = PDF_DIR / f"{book_name}.pdf"
@@ -372,94 +399,143 @@ def run_download_job(job_id, url, book_name, save_job_status):
     meta = build_initial_meta(url)
     start_page = get_page_number_from_url(url)
 
+    update_status(
+        save_job_status=save_job_status,
+        job_id=job_id,
+        book_name=book_name,
+        status="running",
+        message="Initialisiere Download ...",
+        saved_count=0,
+        current_page=start_page,
+    )
+
     save_book_metadata(book_dir, meta, url)
 
-    with sync_playwright() as p:
-        browser = p.firefox.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1600, "height": 2200})
+    try:
+        with sync_playwright() as p:
+            browser = p.firefox.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1600, "height": 2200})
 
-        page.goto(url)
-        page.wait_for_timeout(5000)
-
-        dom_candidates = extract_dom_text_candidates(page)
-        write_text_file(debug_job_dir / "dom_candidates.txt", json.dumps(dom_candidates, indent=2, ensure_ascii=False))
-        meta = enrich_meta_from_dom(meta, dom_candidates)
-
-        book_dir, book_name, pdf_path = maybe_rename_book_dir(
-            book_dir=book_dir,
-            book_name=book_name,
-            pdf_path=pdf_path,
-            meta=meta,
-        )
-        save_book_metadata(book_dir, meta, url)
-
-        page_num = start_page
-        saved_count = 0
-
-        for _ in range(5):
-            current_page_url = make_page_url(url, page_num)
-
-            print(f"[INFO] Lade Seite {page_num}: {current_page_url}")
-            page.goto(current_page_url)
-            page.wait_for_timeout(5000)
-            time.sleep(short_pause())
-            zoom_out(page)
-
-            raw_page_path = debug_job_dir / f"raw_{page_num}.png"
-            final_page_path = book_dir / f"page_{page_num}.png"
-
-            save_screenshot(page, raw_page_path, final_page_path)
-
-            # Nur optionales OCR-Debug für spätere Auswertung
-            page_ocr_text, page_ocr_error = read_page_ocr_debug(raw_page_path)
-            write_text_file(book_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
-            write_text_file(debug_job_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
-
-            if page_ocr_error:
-                print(f"[WARN] OCR-Debug Fehler Seite {page_num}: {page_ocr_error}")
-            else:
-                print(f"[INFO] OCR-Debug Zeichen Seite {page_num}: {len(page_ocr_text or '')}")
-
-            create_page_metadata(
-                book_dir=book_dir,
-                page_number=page_num,
-                image_path=final_page_path,
-                source_url=current_page_url,
-                ocr_text=page_ocr_text,
+            update_status(
+                save_job_status=save_job_status,
+                job_id=job_id,
+                book_name=book_name,
+                status="running",
+                message="Lese Buch-Metadaten ...",
+                saved_count=0,
+                current_page=start_page,
             )
 
-            saved_count += 1
+            page.goto(url)
+            page.wait_for_timeout(2000)
 
-            if save_job_status:
-                try:
-                    save_job_status(job_id, {
-                        "job_id": job_id,
-                        "status": "running",
-                        "saved_count": saved_count,
-                        "current_page": page_num,
-                        "book_name": book_name,
-                        "created_at": datetime.now().isoformat(timespec="seconds"),
-                    })
-                except Exception as e:
-                    print(f"[WARN] save_job_status fehlgeschlagen: {e}")
+            dom_candidates = extract_dom_text_candidates(page)
+            write_text_file(
+                debug_job_dir / "dom_candidates.txt",
+                json.dumps(dom_candidates, indent=2, ensure_ascii=False)
+            )
+            meta = enrich_meta_from_dom(meta, dom_candidates)
 
-            page_num += 1
-            time.sleep(human_pause())
+            book_dir, book_name, pdf_path = maybe_rename_book_dir(
+                book_dir=book_dir,
+                book_name=book_name,
+                pdf_path=pdf_path,
+                meta=meta,
+            )
+            save_book_metadata(book_dir, meta, url)
 
-        save_book_metadata(book_dir, meta, url)
-        create_pdf(book_dir, pdf_path)
+            page_num = start_page
+            saved_count = 0
 
-        if save_job_status:
-            try:
-                save_job_status(job_id, {
-                    "job_id": job_id,
-                    "status": "finished",
-                    "saved_count": saved_count,
-                    "book_name": book_name,
-                    "pdf_path": str(pdf_path),
-                    "created_at": datetime.now().isoformat(timespec="seconds"),
-                })
-            except Exception as e:
-                print(f"[WARN] final save_job_status fehlgeschlagen: {e}")
+            for _ in range(DEBUG_PAGE_COUNT):
+                current_page_url = make_page_url(url, page_num)
 
-        browser.close()
+                update_status(
+                    save_job_status=save_job_status,
+                    job_id=job_id,
+                    book_name=book_name,
+                    status="running",
+                    message=f"Lade Seite {page_num} ...",
+                    saved_count=saved_count,
+                    current_page=page_num,
+                )
+
+                print(f"[INFO] Lade Seite {page_num}: {current_page_url}")
+                page.goto(current_page_url)
+                page.wait_for_timeout(1500)
+                time.sleep(short_pause())
+
+                raw_page_path = debug_job_dir / f"raw_{page_num}.png"
+                final_page_path = book_dir / f"page_{page_num}.png"
+
+                save_screenshot(page, raw_page_path, final_page_path)
+
+                page_ocr_text, page_ocr_error = read_page_ocr_debug(raw_page_path)
+                write_text_file(book_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
+                write_text_file(debug_job_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
+
+                if page_ocr_error:
+                    print(f"[WARN] OCR-Debug Fehler Seite {page_num}: {page_ocr_error}")
+                else:
+                    print(f"[INFO] OCR-Debug Zeichen Seite {page_num}: {len(page_ocr_text or '')}")
+
+                create_page_metadata(
+                    book_dir=book_dir,
+                    page_number=page_num,
+                    image_path=final_page_path,
+                    source_url=current_page_url,
+                    ocr_text=page_ocr_text,
+                )
+
+                saved_count += 1
+
+                update_status(
+                    save_job_status=save_job_status,
+                    job_id=job_id,
+                    book_name=book_name,
+                    status="running",
+                    message=f"Seite {page_num} gespeichert",
+                    saved_count=saved_count,
+                    current_page=page_num,
+                )
+
+                page_num += 1
+                time.sleep(human_pause())
+
+            update_status(
+                save_job_status=save_job_status,
+                job_id=job_id,
+                book_name=book_name,
+                status="running",
+                message="Erzeuge PDF ...",
+                saved_count=saved_count,
+                current_page=page_num - 1,
+            )
+
+            save_book_metadata(book_dir, meta, url)
+            create_pdf(book_dir, pdf_path)
+
+            update_status(
+                save_job_status=save_job_status,
+                job_id=job_id,
+                book_name=book_name,
+                status="finished",
+                message="Download abgeschlossen.",
+                saved_count=saved_count,
+                current_page=page_num - 1,
+                pdf_path=pdf_path,
+            )
+
+            browser.close()
+
+    except Exception as e:
+        update_status(
+            save_job_status=save_job_status,
+            job_id=job_id,
+            book_name=book_name,
+            status="error",
+            message=f"Fehler: {e}",
+            saved_count=0,
+            current_page=start_page,
+        )
+        raise
