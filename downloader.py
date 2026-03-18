@@ -37,6 +37,7 @@ DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 DEBUG_PAGE_COUNT = 3
+SMART_SCAN_LIMIT = 10
 
 
 def human_pause() -> float:
@@ -336,6 +337,86 @@ def read_page_ocr_debug(path: Path):
         return "", str(e)
 
 
+def page_looks_like_title_or_index(page, raw_page_path: Path) -> tuple[bool, str]:
+    reasons = []
+
+    try:
+        dom = extract_dom_text_candidates(page)
+        body = (dom.get("body_text") or "").lower()
+        title = (dom.get("page_title") or "").lower()
+        combined = f"{title} {body}"
+
+        if "pfarre/ort" in combined and "signatur" in combined and "buchtyp" in combined:
+            reasons.append("DOM-Metadatenleiste erkannt")
+
+        if "datum von" in combined and "datum bis" in combined:
+            reasons.append("DOM-Datumsbereich erkannt")
+
+        toc_hits = len(re.findall(r"\b\d{2}-(taufe|trauung|tod|einband)-\d{4}\b", combined))
+        if toc_hits >= 5:
+            reasons.append("Inhaltsverzeichnis/Seitenliste erkannt")
+    except Exception:
+        pass
+
+    ocr_text, _ = read_page_ocr_debug(raw_page_path)
+    lower = (ocr_text or "").lower()
+
+    title_markers = 0
+    for marker in ["bistum", "kirchenbuch", "taufe", "trauung", "tod"]:
+        if marker in lower:
+            title_markers += 1
+
+    if title_markers >= 3:
+        reasons.append("Titelblatt-Muster im OCR erkannt")
+
+    years = re.findall(r"\b(1[5-9]\d{2}|20\d{2})\b", lower)
+    if len(years) >= 2 and "kirchenbuch" in lower:
+        reasons.append("Titelblatt mit Jahresbereich erkannt")
+
+    long_upper_lines = len(re.findall(r"\b[A-ZÄÖÜ][A-ZÄÖÜ ,.\-()]{8,}\b", ocr_text or ""))
+    if long_upper_lines >= 2:
+        reasons.append("Mehrere Titelzeilen in Großschrift erkannt")
+
+    is_title_or_index = len(reasons) > 0
+    return is_title_or_index, "; ".join(reasons)
+
+
+def find_first_content_page(page, start_page: int, base_url: str, debug_job_dir: Path, save_job_status, job_id: str, book_name: str) -> int:
+    for candidate in range(start_page, start_page + SMART_SCAN_LIMIT):
+        current_page_url = make_page_url(base_url, candidate)
+
+        update_status(
+            save_job_status=save_job_status,
+            job_id=job_id,
+            book_name=book_name,
+            status="running",
+            message=f"Prüfe Startseite {candidate} ...",
+            saved_count=0,
+            current_page=candidate,
+        )
+
+        print(f"[INFO] Prüfe mögliche Startseite {candidate}: {current_page_url}")
+        page.goto(current_page_url)
+        page.wait_for_timeout(1200)
+        time.sleep(short_pause())
+
+        raw_probe_path = debug_job_dir / f"probe_{candidate}.png"
+        page.screenshot(path=str(raw_probe_path), full_page=True)
+
+        looks_like_title, reason = page_looks_like_title_or_index(page, raw_probe_path)
+        write_text_file(debug_job_dir / f"probe_{candidate}.reason.txt", reason)
+
+        if looks_like_title:
+            print(f"[INFO] Seite {candidate} wird übersprungen: {reason}")
+            continue
+
+        print(f"[INFO] Erste Inhaltsseite gefunden: {candidate}")
+        return candidate
+
+    print(f"[WARN] Keine klare Inhaltsseite gefunden, verwende Startseite {start_page}")
+    return start_page
+
+
 def create_page_metadata(
     book_dir: Path,
     page_number: int,
@@ -427,7 +508,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
             )
 
             page.goto(url)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(1500)
 
             dom_candidates = extract_dom_text_candidates(page)
             write_text_file(
@@ -444,7 +525,17 @@ def run_download_job(job_id, url, book_name, save_job_status):
             )
             save_book_metadata(book_dir, meta, url)
 
-            page_num = start_page
+            content_start_page = find_first_content_page(
+                page=page,
+                start_page=start_page,
+                base_url=url,
+                debug_job_dir=debug_job_dir,
+                save_job_status=save_job_status,
+                job_id=job_id,
+                book_name=book_name,
+            )
+
+            page_num = content_start_page
             saved_count = 0
 
             for _ in range(DEBUG_PAGE_COUNT):
