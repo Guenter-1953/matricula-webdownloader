@@ -460,13 +460,10 @@ def center_viewer_canvas(page):
 
             const rect = bigCanvas.rect;
 
-            const targetX = Math.max(50, rect.left + rect.width * 0.42);
-            const targetY = Math.max(50, rect.top + rect.height * 0.50);
-
             return {
                 ok: true,
-                x: targetX,
-                y: targetY,
+                x: Math.max(50, rect.left + rect.width * 0.42),
+                y: Math.max(50, rect.top + rect.height * 0.50),
                 width: rect.width,
                 height: rect.height
             };
@@ -489,11 +486,10 @@ def center_viewer_canvas(page):
         start_x = result["x"]
         start_y = result["y"]
         end_x = max(120, start_x - 120)
-        end_y = start_y
 
         page.mouse.move(start_x, start_y)
         page.mouse.down()
-        page.mouse.move(end_x, end_y, steps=10)
+        page.mouse.move(end_x, start_y, steps=10)
         page.mouse.up()
         page.wait_for_timeout(600)
 
@@ -655,11 +651,7 @@ def analyze_page_content_type(image_path: Path) -> dict:
 
     result = {
         "is_content": is_content,
-        "reason": (
-            "Tabellarische Inhaltsseite erkannt"
-            if is_content
-            else "Titel-/Vorspannseite erkannt"
-        ),
+        "reason": "Tabellarische Inhaltsseite erkannt" if is_content else "Titel-/Vorspannseite erkannt",
         "dark_ratio": round(dark_ratio, 5),
         "upper_dark_ratio": round(upper_dark_ratio, 5),
         "middle_dark_ratio": round(middle_dark_ratio, 5),
@@ -883,4 +875,54 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 saved_count += 1
 
                 update_status(
-                    save_job_status=save_job_status
+                    save_job_status=save_job_status,
+                    job_id=job_id,
+                    book_name=book_name,
+                    status="running",
+                    message=f"Seite {local_page_num:04d} gespeichert (Quelle {source_page_num})",
+                    saved_count=saved_count,
+                    current_page=source_page_num,
+                )
+
+                source_page_num += 1
+                time.sleep(human_pause())
+
+            update_status(
+                save_job_status=save_job_status,
+                job_id=job_id,
+                book_name=book_name,
+                status="running",
+                message="Erzeuge PDF ...",
+                saved_count=saved_count,
+                current_page=source_page_num - 1,
+            )
+
+            save_book_metadata(book_dir, meta, url)
+            create_pdf(book_dir, pdf_path)
+
+            update_status(
+                save_job_status=save_job_status,
+                job_id=job_id,
+                book_name=book_name,
+                status="finished",
+                message="Download abgeschlossen.",
+                saved_count=saved_count,
+                current_page=source_page_num - 1,
+                pdf_path=pdf_path,
+            )
+
+            browser.close()
+            log(f"Job erfolgreich beendet: job_id={job_id} book_name={book_name}")
+
+    except Exception as e:
+        update_status(
+            save_job_status=save_job_status,
+            job_id=job_id,
+            book_name=book_name,
+            status="error",
+            message=f"Fehler: {e}",
+            saved_count=0,
+            current_page=start_page,
+        )
+        log(f"Job mit Fehler beendet: {e}")
+        raise
