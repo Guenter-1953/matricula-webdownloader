@@ -319,74 +319,79 @@ def read_page_ocr_debug(path: Path):
 
 def detect_viewer_clip(page):
     """
-    Sucht das wahrscheinlich richtige Seiten-/Viewer-Element und liefert einen Clip
-    für page.screenshot(clip=...).
+    Sucht das wahrscheinlich richtige Viewer-Element.
 
-    Strategie:
-    - sichtbare img/canvas/svg Elemente suchen
-    - Navigationsliste links ausschließen
-    - nur größere Elemente rechts/zentral berücksichtigen
-    - das größte brauchbare Element wählen
+    Neue, strengere Strategie:
+    - nur img/canvas/svg
+    - mindestens 800x800
+    - Mittelpunkt muss zentral liegen
+    - schmale/linke Navigation wird ignoriert
     """
     script = """
     () => {
-        const candidates = [];
         const all = Array.from(document.querySelectorAll('img, canvas, svg'));
+        const candidates = [];
 
         for (const el of all) {
             const rect = el.getBoundingClientRect();
             const style = window.getComputedStyle(el);
 
-            if (!rect || rect.width < 250 || rect.height < 250) continue;
-            if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0) continue;
+            if (!rect) continue;
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            if (Number(style.opacity || '1') === 0) continue;
 
-            // Links schmale Navigation möglichst vermeiden
-            if (rect.left < 180 && rect.width < 500) continue;
+            if (rect.width < 800 || rect.height < 800) continue;
 
-            // Sehr kleine Sidebars/Tabs raus
-            const area = rect.width * rect.height;
             const viewportWidth = window.innerWidth;
             const viewportHeight = window.innerHeight;
 
-            // Nur Sachen, die wenigstens teilweise im Viewport liegen
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+
+            if (centerX < viewportWidth * 0.25 || centerX > viewportWidth * 0.75) continue;
+            if (centerY < viewportHeight * 0.20 || centerY > viewportHeight * 0.90) continue;
+
             if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight) continue;
 
             candidates.push({
                 tag: el.tagName.toLowerCase(),
-                left: Math.max(0, rect.left),
-                top: Math.max(0, rect.top),
-                width: Math.min(rect.width, viewportWidth - Math.max(0, rect.left)),
-                height: Math.min(rect.height, viewportHeight - Math.max(0, rect.top)),
-                area,
-                className: el.className ? String(el.className) : '',
-                id: el.id ? String(el.id) : ''
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+                area: rect.width * rect.height
             });
         }
 
         candidates.sort((a, b) => b.area - a.area);
-        return candidates.slice(0, 10);
+        return candidates.length ? candidates[0] : null;
     }
     """
 
     try:
-        candidates = page.evaluate(script)
+        result = page.evaluate(script)
+        if not result:
+            print("[WARN] Kein Viewer-Kandidat gefunden")
+            return None
+
+        clip = {
+            "x": max(0, result["left"]),
+            "y": max(0, result["top"]),
+            "width": result["width"],
+            "height": result["height"],
+        }
+
+        print(
+            "[INFO] Viewer-Kandidat gewählt: "
+            f"tag={result.get('tag')} "
+            f"x={clip['x']} y={clip['y']} "
+            f"w={clip['width']} h={clip['height']}"
+        )
+        return clip
+
     except Exception as e:
-        print(f"[WARN] detect_viewer_clip evaluate fehlgeschlagen: {e}")
+        print(f"[WARN] detect_viewer_clip Fehler: {e}")
         return None
-
-    if not candidates:
-        print("[WARN] Keine Viewer-Kandidaten gefunden")
-        return None
-
-    best = candidates[0]
-    print(f"[INFO] Viewer-Kandidat gewählt: tag={best['tag']} left={best['left']} top={best['top']} width={best['width']} height={best['height']}")
-
-    return {
-        "x": best["left"],
-        "y": best["top"],
-        "width": best["width"],
-        "height": best["height"],
-    }
 
 
 def save_viewer_screenshot(page, raw_path: Path, final_path: Path):
@@ -400,7 +405,6 @@ def save_viewer_screenshot(page, raw_path: Path, final_path: Path):
         except Exception as e:
             print(f"[WARN] Viewer-Clip-Screenshot fehlgeschlagen, fallback full page: {e}")
 
-    # Fallback
     page.screenshot(path=str(raw_path), full_page=True)
     shutil.copy(str(raw_path), str(final_path))
 
@@ -525,7 +529,9 @@ def run_download_job(job_id, url, book_name, save_job_status):
 
                 print(f"[INFO] Lade Seite {page_num}: {current_page_url}")
                 page.goto(current_page_url)
-                page.wait_for_timeout(1800)
+
+                # WICHTIG: mehr Zeit, damit der Viewer wirklich geladen ist
+                page.wait_for_timeout(3500)
                 time.sleep(short_pause())
 
                 raw_page_path = debug_job_dir / f"raw_{page_num}.png"
