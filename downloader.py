@@ -321,11 +321,11 @@ def detect_viewer_clip(page):
     """
     Sucht das wahrscheinlich richtige Viewer-Element.
 
-    Neue, strengere Strategie:
+    Strengere Strategie:
     - nur img/canvas/svg
     - mindestens 800x800
     - Mittelpunkt muss zentral liegen
-    - schmale/linke Navigation wird ignoriert
+    - rechter Rand enger gefasst, damit die Seitenliste eher rausfällt
     """
     script = """
     () => {
@@ -348,7 +348,7 @@ def detect_viewer_clip(page):
             const centerX = rect.left + rect.width / 2;
             const centerY = rect.top + rect.height / 2;
 
-            if (centerX < viewportWidth * 0.25 || centerX > viewportWidth * 0.75) continue;
+            if (centerX < viewportWidth * 0.25 || centerX > viewportWidth * 0.65) continue;
             if (centerY < viewportHeight * 0.20 || centerY > viewportHeight * 0.90) continue;
 
             if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight) continue;
@@ -529,8 +529,6 @@ def run_download_job(job_id, url, book_name, save_job_status):
 
                 print(f"[INFO] Lade Seite {page_num}: {current_page_url}")
                 page.goto(current_page_url)
-
-                # WICHTIG: mehr Zeit, damit der Viewer wirklich geladen ist
                 page.wait_for_timeout(3500)
                 time.sleep(short_pause())
 
