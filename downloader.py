@@ -37,7 +37,6 @@ DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 DEBUG_PAGE_COUNT = 3
-SMART_SCAN_LIMIT = 10
 
 
 def human_pause() -> float:
@@ -46,25 +45,6 @@ def human_pause() -> float:
 
 def short_pause() -> float:
     return round(random.uniform(0.4, 0.9), 2)
-
-
-def auto_crop_image(path: Path) -> None:
-    img = cv2.imread(str(path))
-    if img is None:
-        return
-
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    thresh = cv2.threshold(blur, 200, 255, cv2.THRESH_BINARY_INV)[1]
-
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return
-
-    largest = max(contours, key=cv2.contourArea)
-    x, y, w, h = cv2.boundingRect(largest)
-    cropped = img[y:y + h, x:x + w]
-    cv2.imwrite(str(path), cropped)
 
 
 def write_text_file(path: Path, text: str):
@@ -337,84 +317,92 @@ def read_page_ocr_debug(path: Path):
         return "", str(e)
 
 
-def page_looks_like_title_or_index(page, raw_page_path: Path) -> tuple[bool, str]:
-    reasons = []
+def detect_viewer_clip(page):
+    """
+    Sucht das wahrscheinlich richtige Seiten-/Viewer-Element und liefert einen Clip
+    für page.screenshot(clip=...).
+
+    Strategie:
+    - sichtbare img/canvas/svg Elemente suchen
+    - Navigationsliste links ausschließen
+    - nur größere Elemente rechts/zentral berücksichtigen
+    - das größte brauchbare Element wählen
+    """
+    script = """
+    () => {
+        const candidates = [];
+        const all = Array.from(document.querySelectorAll('img, canvas, svg'));
+
+        for (const el of all) {
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+
+            if (!rect || rect.width < 250 || rect.height < 250) continue;
+            if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0) continue;
+
+            // Links schmale Navigation möglichst vermeiden
+            if (rect.left < 180 && rect.width < 500) continue;
+
+            // Sehr kleine Sidebars/Tabs raus
+            const area = rect.width * rect.height;
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+
+            // Nur Sachen, die wenigstens teilweise im Viewport liegen
+            if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight) continue;
+
+            candidates.push({
+                tag: el.tagName.toLowerCase(),
+                left: Math.max(0, rect.left),
+                top: Math.max(0, rect.top),
+                width: Math.min(rect.width, viewportWidth - Math.max(0, rect.left)),
+                height: Math.min(rect.height, viewportHeight - Math.max(0, rect.top)),
+                area,
+                className: el.className ? String(el.className) : '',
+                id: el.id ? String(el.id) : ''
+            });
+        }
+
+        candidates.sort((a, b) => b.area - a.area);
+        return candidates.slice(0, 10);
+    }
+    """
 
     try:
-        dom = extract_dom_text_candidates(page)
-        body = (dom.get("body_text") or "").lower()
-        title = (dom.get("page_title") or "").lower()
-        combined = f"{title} {body}"
+        candidates = page.evaluate(script)
+    except Exception as e:
+        print(f"[WARN] detect_viewer_clip evaluate fehlgeschlagen: {e}")
+        return None
 
-        if "pfarre/ort" in combined and "signatur" in combined and "buchtyp" in combined:
-            reasons.append("DOM-Metadatenleiste erkannt")
+    if not candidates:
+        print("[WARN] Keine Viewer-Kandidaten gefunden")
+        return None
 
-        if "datum von" in combined and "datum bis" in combined:
-            reasons.append("DOM-Datumsbereich erkannt")
+    best = candidates[0]
+    print(f"[INFO] Viewer-Kandidat gewählt: tag={best['tag']} left={best['left']} top={best['top']} width={best['width']} height={best['height']}")
 
-        toc_hits = len(re.findall(r"\b\d{2}-(taufe|trauung|tod|einband)-\d{4}\b", combined))
-        if toc_hits >= 5:
-            reasons.append("Inhaltsverzeichnis/Seitenliste erkannt")
-    except Exception:
-        pass
-
-    ocr_text, _ = read_page_ocr_debug(raw_page_path)
-    lower = (ocr_text or "").lower()
-
-    title_markers = 0
-    for marker in ["bistum", "kirchenbuch", "taufe", "trauung", "tod"]:
-        if marker in lower:
-            title_markers += 1
-
-    if title_markers >= 3:
-        reasons.append("Titelblatt-Muster im OCR erkannt")
-
-    years = re.findall(r"\b(1[5-9]\d{2}|20\d{2})\b", lower)
-    if len(years) >= 2 and "kirchenbuch" in lower:
-        reasons.append("Titelblatt mit Jahresbereich erkannt")
-
-    long_upper_lines = len(re.findall(r"\b[A-ZÄÖÜ][A-ZÄÖÜ ,.\-()]{8,}\b", ocr_text or ""))
-    if long_upper_lines >= 2:
-        reasons.append("Mehrere Titelzeilen in Großschrift erkannt")
-
-    is_title_or_index = len(reasons) > 0
-    return is_title_or_index, "; ".join(reasons)
+    return {
+        "x": best["left"],
+        "y": best["top"],
+        "width": best["width"],
+        "height": best["height"],
+    }
 
 
-def find_first_content_page(page, start_page: int, base_url: str, debug_job_dir: Path, save_job_status, job_id: str, book_name: str) -> int:
-    for candidate in range(start_page, start_page + SMART_SCAN_LIMIT):
-        current_page_url = make_page_url(base_url, candidate)
+def save_viewer_screenshot(page, raw_path: Path, final_path: Path):
+    clip = detect_viewer_clip(page)
 
-        update_status(
-            save_job_status=save_job_status,
-            job_id=job_id,
-            book_name=book_name,
-            status="running",
-            message=f"Prüfe Startseite {candidate} ...",
-            saved_count=0,
-            current_page=candidate,
-        )
+    if clip:
+        try:
+            page.screenshot(path=str(raw_path), clip=clip)
+            shutil.copy(str(raw_path), str(final_path))
+            return
+        except Exception as e:
+            print(f"[WARN] Viewer-Clip-Screenshot fehlgeschlagen, fallback full page: {e}")
 
-        print(f"[INFO] Prüfe mögliche Startseite {candidate}: {current_page_url}")
-        page.goto(current_page_url)
-        page.wait_for_timeout(1200)
-        time.sleep(short_pause())
-
-        raw_probe_path = debug_job_dir / f"probe_{candidate}.png"
-        page.screenshot(path=str(raw_probe_path), full_page=True)
-
-        looks_like_title, reason = page_looks_like_title_or_index(page, raw_probe_path)
-        write_text_file(debug_job_dir / f"probe_{candidate}.reason.txt", reason)
-
-        if looks_like_title:
-            print(f"[INFO] Seite {candidate} wird übersprungen: {reason}")
-            continue
-
-        print(f"[INFO] Erste Inhaltsseite gefunden: {candidate}")
-        return candidate
-
-    print(f"[WARN] Keine klare Inhaltsseite gefunden, verwende Startseite {start_page}")
-    return start_page
+    # Fallback
+    page.screenshot(path=str(raw_path), full_page=True)
+    shutil.copy(str(raw_path), str(final_path))
 
 
 def create_page_metadata(
@@ -436,12 +424,6 @@ def create_page_metadata(
         print(f"[INFO] page_{page_number}.json erzeugt")
     except Exception as e:
         print(f"[WARN] page.json konnte nicht erzeugt werden für Seite {page_number}: {e}")
-
-
-def save_screenshot(page, raw_path: Path, final_path: Path):
-    page.screenshot(path=str(raw_path), full_page=True)
-    shutil.copy(str(raw_path), str(final_path))
-    auto_crop_image(final_path)
 
 
 def update_status(save_job_status, job_id, book_name, status, message, saved_count=0, current_page=None, pdf_path=None):
@@ -495,7 +477,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
     try:
         with sync_playwright() as p:
             browser = p.firefox.launch(headless=True)
-            page = browser.new_page(viewport={"width": 1600, "height": 2200})
+            page = browser.new_page(viewport={"width": 2200, "height": 1600})
 
             update_status(
                 save_job_status=save_job_status,
@@ -508,7 +490,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
             )
 
             page.goto(url)
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(2000)
 
             dom_candidates = extract_dom_text_candidates(page)
             write_text_file(
@@ -525,17 +507,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
             )
             save_book_metadata(book_dir, meta, url)
 
-            content_start_page = find_first_content_page(
-                page=page,
-                start_page=start_page,
-                base_url=url,
-                debug_job_dir=debug_job_dir,
-                save_job_status=save_job_status,
-                job_id=job_id,
-                book_name=book_name,
-            )
-
-            page_num = content_start_page
+            page_num = start_page
             saved_count = 0
 
             for _ in range(DEBUG_PAGE_COUNT):
@@ -553,13 +525,13 @@ def run_download_job(job_id, url, book_name, save_job_status):
 
                 print(f"[INFO] Lade Seite {page_num}: {current_page_url}")
                 page.goto(current_page_url)
-                page.wait_for_timeout(1500)
+                page.wait_for_timeout(1800)
                 time.sleep(short_pause())
 
                 raw_page_path = debug_job_dir / f"raw_{page_num}.png"
                 final_page_path = book_dir / f"page_{page_num}.png"
 
-                save_screenshot(page, raw_page_path, final_page_path)
+                save_viewer_screenshot(page, raw_page_path, final_page_path)
 
                 page_ocr_text, page_ocr_error = read_page_ocr_debug(raw_page_path)
                 write_text_file(book_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
