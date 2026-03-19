@@ -458,7 +458,6 @@ def center_viewer_canvas(page):
                 return { ok: false, reason: 'no_big_canvas' };
             }
 
-            const canvas = bigCanvas.el;
             const rect = bigCanvas.rect;
 
             const targetX = Math.max(50, rect.left + rect.width * 0.42);
@@ -550,16 +549,42 @@ def create_page_metadata(
         log(f"page.json konnte nicht erzeugt werden für lokale Seite {local_page_number}: {e}")
 
 
-def detect_table_structure(gray_img) -> dict:
-    """
-    Erkennt grob tabellarische Doppelseiten.
-    Solche Seiten haben viele lange vertikale und horizontale Linien.
-    """
-    h, w = gray_img.shape[:2]
+def update_status(save_job_status, job_id, book_name, status, message, saved_count=0, current_page=None, pdf_path=None):
+    log(
+        f"Statusupdate: job_id={job_id} "
+        f"book_name={book_name} status={status} "
+        f"saved_count={saved_count} current_page={current_page} message={message}"
+    )
 
+    if not save_job_status:
+        return
+
+    payload = {
+        "job_id": job_id,
+        "book_name": book_name,
+        "status": status,
+        "message": message,
+        "saved_count": saved_count,
+        "pages": saved_count,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    if current_page is not None:
+        payload["current_page"] = current_page
+    if pdf_path is not None:
+        payload["pdf_path"] = str(pdf_path)
+
+    try:
+        save_job_status(job_id, payload)
+    except Exception as e:
+        log(f"save_job_status fehlgeschlagen: {e}")
+
+
+def detect_table_structure(gray_img) -> dict:
     inv = 255 - gray_img
     _, bw = cv2.threshold(inv, 140, 255, cv2.THRESH_BINARY)
 
+    h, w = gray_img.shape[:2]
     vert_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(20, h // 18)))
     hor_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(20, w // 18), 1))
 
@@ -569,7 +594,6 @@ def detect_table_structure(gray_img) -> dict:
     vertical_ratio = float((vertical > 0).mean())
     horizontal_ratio = float((horizontal > 0).mean())
 
-    # gezählte "starke" Linienbänder
     col_density = (vertical > 0).mean(axis=0)
     row_density = (horizontal > 0).mean(axis=1)
 
@@ -585,11 +609,6 @@ def detect_table_structure(gray_img) -> dict:
 
 
 def analyze_page_content_type(image_path: Path) -> dict:
-    """
-    Verbesserte Heuristik:
-    - echte Tabellen-/Eintragsseiten haben erkennbare Tabellenlinien
-    - Titel-/Zwischenseiten haben zwar Text, aber kaum Tabellenstruktur
-    """
     img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         return {
@@ -624,7 +643,6 @@ def analyze_page_content_type(image_path: Path) -> dict:
         table_info["strong_horizontal_bands"] >= 6
     )
 
-    # Titel-/Vorspannseite: oft Text vorhanden, aber keine Tabelle
     looks_like_title = (
         not has_table and (
             dark_ratio < 0.12 or
@@ -633,7 +651,6 @@ def analyze_page_content_type(image_path: Path) -> dict:
         )
     )
 
-    # Echte Inhaltsseite: Tabellenstruktur dominiert
     is_content = has_table and not looks_like_title
 
     result = {
@@ -866,54 +883,4 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 saved_count += 1
 
                 update_status(
-                    save_job_status=save_job_status,
-                    job_id=job_id,
-                    book_name=book_name,
-                    status="running",
-                    message=f"Seite {local_page_num:04d} gespeichert (Quelle {source_page_num})",
-                    saved_count=saved_count,
-                    current_page=source_page_num,
-                )
-
-                source_page_num += 1
-                time.sleep(human_pause())
-
-            update_status(
-                save_job_status=save_job_status,
-                job_id=job_id,
-                book_name=book_name,
-                status="running",
-                message="Erzeuge PDF ...",
-                saved_count=saved_count,
-                current_page=source_page_num - 1,
-            )
-
-            save_book_metadata(book_dir, meta, url)
-            create_pdf(book_dir, pdf_path)
-
-            update_status(
-                save_job_status=save_job_status,
-                job_id=job_id,
-                book_name=book_name,
-                status="finished",
-                message="Download abgeschlossen.",
-                saved_count=saved_count,
-                current_page=source_page_num - 1,
-                pdf_path=pdf_path,
-            )
-
-            browser.close()
-            log(f"Job erfolgreich beendet: job_id={job_id} book_name={book_name}")
-
-    except Exception as e:
-        update_status(
-            save_job_status=save_job_status,
-            job_id=job_id,
-            book_name=book_name,
-            status="error",
-            message=f"Fehler: {e}",
-            saved_count=0,
-            current_page=start_page,
-        )
-        log(f"Job mit Fehler beendet: {e}")
-        raise
+                    save_job_status=save_job_status
