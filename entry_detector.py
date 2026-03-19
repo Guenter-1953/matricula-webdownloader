@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from dataclasses import dataclass, asdict
 from typing import List, Optional, Dict, Any
 
@@ -15,7 +16,8 @@ class EntryRegion:
 
 
 def _ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
+    if path:
+        os.makedirs(path, exist_ok=True)
 
 
 def _clamp(value: int, min_value: int, max_value: int) -> int:
@@ -349,3 +351,44 @@ def detect_entries_on_page(
         result["output_dir"] = output_dir
 
     return result
+
+
+def _default_output_dir_for_image(image_path: str) -> str:
+    image_dir = os.path.dirname(image_path)
+    return os.path.join(image_dir, "entry_debug")
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print("Usage: python entry_detector.py /path/to/page_0001.png")
+        return 1
+
+    image_path = sys.argv[1]
+    output_dir = _default_output_dir_for_image(image_path)
+
+    try:
+        result = detect_entries_on_page(
+            image_path=image_path,
+            output_dir=output_dir,
+            save_debug=True,
+        )
+    except Exception as exc:
+        print(f"ERROR: {exc}")
+        return 1
+
+    print(f"Image: {result['image_path']}")
+    print(f"Size: {result['image_width']}x{result['image_height']}")
+    print(f"Detected regions: {len(result['entry_regions'])}")
+    print(f"Output dir: {output_dir}")
+
+    for idx, region in enumerate(result["entry_regions"], start=1):
+        print(
+            f"  {idx:03d}: y1={region['y1']} y2={region['y2']} "
+            f"height={region['height']} pixel_sum={region['pixel_count_sum']}"
+        )
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
