@@ -445,10 +445,6 @@ def detect_viewer_clip(page, debug_job_dir: Path = None, page_num: int = None):
 
 
 def center_viewer_canvas(page):
-    """
-    Versucht den Viewer so zu positionieren, dass die eigentliche Buchseite
-    mittiger liegt und rechte UI-Elemente weniger stören.
-    """
     script = """
     () => {
         try {
@@ -465,9 +461,7 @@ def center_viewer_canvas(page):
             const canvas = bigCanvas.el;
             const rect = bigCanvas.rect;
 
-            // Klick grob in die Mitte des eigentlichen Bildbereichs,
-            // etwas links der geometrischen Mitte, um rechte Leiste zu vermeiden.
-            const targetX = Math.max(50, rect.left + rect.width * 0.40);
+            const targetX = Math.max(50, rect.left + rect.width * 0.42);
             const targetY = Math.max(50, rect.top + rect.height * 0.50);
 
             return {
@@ -490,19 +484,17 @@ def center_viewer_canvas(page):
         if not result.get("ok"):
             return
 
-        # Fokus setzen
         page.mouse.click(result["x"], result["y"])
         page.wait_for_timeout(400)
 
-        # Klein wenig nach links "ziehen", damit die Buchseite eher mittig liegt
         start_x = result["x"]
         start_y = result["y"]
-        end_x = max(100, start_x - 180)
+        end_x = max(120, start_x - 120)
         end_y = start_y
 
         page.mouse.move(start_x, start_y)
         page.mouse.down()
-        page.mouse.move(end_x, end_y, steps=12)
+        page.mouse.move(end_x, end_y, steps=10)
         page.mouse.up()
         page.wait_for_timeout(600)
 
@@ -558,38 +550,46 @@ def create_page_metadata(
         log(f"page.json konnte nicht erzeugt werden für lokale Seite {local_page_number}: {e}")
 
 
-def update_status(save_job_status, job_id, book_name, status, message, saved_count=0, current_page=None, pdf_path=None):
-    log(
-        f"Statusupdate: job_id={job_id} "
-        f"book_name={book_name} status={status} "
-        f"saved_count={saved_count} current_page={current_page} message={message}"
-    )
+def detect_table_structure(gray_img) -> dict:
+    """
+    Erkennt grob tabellarische Doppelseiten.
+    Solche Seiten haben viele lange vertikale und horizontale Linien.
+    """
+    h, w = gray_img.shape[:2]
 
-    if not save_job_status:
-        return
+    inv = 255 - gray_img
+    _, bw = cv2.threshold(inv, 140, 255, cv2.THRESH_BINARY)
 
-    payload = {
-        "job_id": job_id,
-        "book_name": book_name,
-        "status": status,
-        "message": message,
-        "saved_count": saved_count,
-        "pages": saved_count,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
+    vert_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(20, h // 18)))
+    hor_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(20, w // 18), 1))
+
+    vertical = cv2.morphologyEx(bw, cv2.MORPH_OPEN, vert_kernel)
+    horizontal = cv2.morphologyEx(bw, cv2.MORPH_OPEN, hor_kernel)
+
+    vertical_ratio = float((vertical > 0).mean())
+    horizontal_ratio = float((horizontal > 0).mean())
+
+    # gezählte "starke" Linienbänder
+    col_density = (vertical > 0).mean(axis=0)
+    row_density = (horizontal > 0).mean(axis=1)
+
+    strong_vertical_bands = int((col_density > 0.08).sum())
+    strong_horizontal_bands = int((row_density > 0.08).sum())
+
+    return {
+        "vertical_ratio": round(vertical_ratio, 5),
+        "horizontal_ratio": round(horizontal_ratio, 5),
+        "strong_vertical_bands": strong_vertical_bands,
+        "strong_horizontal_bands": strong_horizontal_bands,
     }
-
-    if current_page is not None:
-        payload["current_page"] = current_page
-    if pdf_path is not None:
-        payload["pdf_path"] = str(pdf_path)
-
-    try:
-        save_job_status(job_id, payload)
-    except Exception as e:
-        log(f"save_job_status fehlgeschlagen: {e}")
 
 
 def analyze_page_content_type(image_path: Path) -> dict:
+    """
+    Verbesserte Heuristik:
+    - echte Tabellen-/Eintragsseiten haben erkennbare Tabellenlinien
+    - Titel-/Zwischenseiten haben zwar Text, aber kaum Tabellenstruktur
+    """
     img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         return {
@@ -600,7 +600,6 @@ def analyze_page_content_type(image_path: Path) -> dict:
         }
 
     blur = cv2.GaussianBlur(img, (3, 3), 0)
-
     dark_mask = blur < 210
     dark_ratio = float(dark_mask.mean())
 
@@ -608,40 +607,63 @@ def analyze_page_content_type(image_path: Path) -> dict:
     line_bands = int((row_density > 0.03).sum())
 
     h = img.shape[0]
-    lower = blur[int(h * 0.45):, :]
+    upper = blur[:int(h * 0.30), :]
+    middle = blur[int(h * 0.30):int(h * 0.70), :]
+    lower = blur[int(h * 0.70):, :]
+
+    upper_dark_ratio = float((upper < 210).mean()) if upper.size else 0.0
+    middle_dark_ratio = float((middle < 210).mean()) if middle.size else 0.0
     lower_dark_ratio = float((lower < 210).mean()) if lower.size else 0.0
 
-    looks_like_title = (
-        dark_ratio < 0.055 and
-        line_bands < 340 and
-        lower_dark_ratio < 0.06
+    table_info = detect_table_structure(blur)
+
+    has_table = (
+        table_info["vertical_ratio"] > 0.01 or
+        table_info["horizontal_ratio"] > 0.01 or
+        table_info["strong_vertical_bands"] >= 6 or
+        table_info["strong_horizontal_bands"] >= 6
     )
 
-    upper = blur[:int(h * 0.40), :]
-    upper_dark_ratio = float((upper < 210).mean()) if upper.size else 0.0
+    # Titel-/Vorspannseite: oft Text vorhanden, aber keine Tabelle
+    looks_like_title = (
+        not has_table and (
+            dark_ratio < 0.12 or
+            middle_dark_ratio < 0.12 or
+            lower_dark_ratio < 0.10
+        )
+    )
 
-    if dark_ratio < 0.07 and upper_dark_ratio < 0.04 and lower_dark_ratio < 0.08:
-        looks_like_title = True
+    # Echte Inhaltsseite: Tabellenstruktur dominiert
+    is_content = has_table and not looks_like_title
 
     result = {
-        "is_content": not looks_like_title,
+        "is_content": is_content,
         "reason": (
-            "Inhaltsseite erkannt"
-            if not looks_like_title
+            "Tabellarische Inhaltsseite erkannt"
+            if is_content
             else "Titel-/Vorspannseite erkannt"
         ),
         "dark_ratio": round(dark_ratio, 5),
-        "lower_dark_ratio": round(lower_dark_ratio, 5),
         "upper_dark_ratio": round(upper_dark_ratio, 5),
+        "middle_dark_ratio": round(middle_dark_ratio, 5),
+        "lower_dark_ratio": round(lower_dark_ratio, 5),
         "line_bands": line_bands,
+        "has_table": has_table,
+        "table_vertical_ratio": table_info["vertical_ratio"],
+        "table_horizontal_ratio": table_info["horizontal_ratio"],
+        "strong_vertical_bands": table_info["strong_vertical_bands"],
+        "strong_horizontal_bands": table_info["strong_horizontal_bands"],
     }
 
     log(
         f"Bildanalyse {image_path.name}: "
         f"is_content={result['is_content']} "
+        f"has_table={result['has_table']} "
         f"dark_ratio={result['dark_ratio']} "
-        f"lower_dark_ratio={result['lower_dark_ratio']} "
-        f"line_bands={result['line_bands']}"
+        f"v_ratio={result['table_vertical_ratio']} "
+        f"h_ratio={result['table_horizontal_ratio']} "
+        f"v_bands={result['strong_vertical_bands']} "
+        f"h_bands={result['strong_horizontal_bands']}"
     )
     return result
 
@@ -840,10 +862,6 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     source_url=current_page_url,
                     ocr_text=page_ocr_text,
                 )
-
-                # Vorbereitung für spätere Eintragsausschnitte:
-                # Hier können wir später pro final_page_path Zeilen-/Blockerkennung machen
-                # und entry_0001_01.png + entry_0001_01.json usw. erzeugen.
 
                 saved_count += 1
 
