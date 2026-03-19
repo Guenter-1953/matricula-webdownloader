@@ -37,7 +37,6 @@ DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 DEBUG_PAGE_COUNT = 5
-RIGHT_CROP_PX = 300
 SMART_SKIP_LIMIT = 8
 
 
@@ -386,8 +385,8 @@ def detect_viewer_clip(page, debug_job_dir: Path = None, page_num: int = None):
             info.centerX = centerX;
             info.centerY = centerY;
             info.minSizeOk = rect.width >= 800 && rect.height >= 800;
-            info.centerOk = !(centerX < viewportWidth * 0.25 || centerX > viewportWidth * 0.75);
-            info.centerYOk = !(centerY < viewportHeight * 0.20 || centerY > viewportHeight * 0.90);
+            info.centerOk = !(centerX < viewportWidth * 0.20 || centerX > viewportWidth * 0.80);
+            info.centerYOk = !(centerY < viewportHeight * 0.15 || centerY > viewportHeight * 0.90);
             info.visibleOk = !(rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight);
             info.styleOk = !(style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0);
 
@@ -445,33 +444,80 @@ def detect_viewer_clip(page, debug_job_dir: Path = None, page_num: int = None):
         return None
 
 
-def apply_right_crop_to_clip(clip: dict) -> dict:
-    if not clip:
-        return clip
+def center_viewer_canvas(page):
+    """
+    Versucht den Viewer so zu positionieren, dass die eigentliche Buchseite
+    mittiger liegt und rechte UI-Elemente weniger stören.
+    """
+    script = """
+    () => {
+        try {
+            const canvases = Array.from(document.querySelectorAll('canvas'));
+            const bigCanvas = canvases
+                .map(c => ({ el: c, rect: c.getBoundingClientRect() }))
+                .filter(x => x.rect.width > 800 && x.rect.height > 800)
+                .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height))[0];
 
-    cropped_width = max(300, clip["width"] - RIGHT_CROP_PX)
+            if (!bigCanvas) {
+                return { ok: false, reason: 'no_big_canvas' };
+            }
 
-    new_clip = {
-        "x": clip["x"],
-        "y": clip["y"],
-        "width": cropped_width,
-        "height": clip["height"],
+            const canvas = bigCanvas.el;
+            const rect = bigCanvas.rect;
+
+            // Klick grob in die Mitte des eigentlichen Bildbereichs,
+            // etwas links der geometrischen Mitte, um rechte Leiste zu vermeiden.
+            const targetX = Math.max(50, rect.left + rect.width * 0.40);
+            const targetY = Math.max(50, rect.top + rect.height * 0.50);
+
+            return {
+                ok: true,
+                x: targetX,
+                y: targetY,
+                width: rect.width,
+                height: rect.height
+            };
+        } catch (e) {
+            return { ok: false, reason: String(e) };
+        }
     }
+    """
 
-    log(
-        "Rechtsbeschnitt angewendet: "
-        f"alt_w={clip['width']} neu_w={new_clip['width']} crop_px={RIGHT_CROP_PX}"
-    )
-    return new_clip
+    try:
+        result = page.evaluate(script)
+        log(f"Viewer-Zentrierung Ergebnis: {result}")
+
+        if not result.get("ok"):
+            return
+
+        # Fokus setzen
+        page.mouse.click(result["x"], result["y"])
+        page.wait_for_timeout(400)
+
+        # Klein wenig nach links "ziehen", damit die Buchseite eher mittig liegt
+        start_x = result["x"]
+        start_y = result["y"]
+        end_x = max(100, start_x - 180)
+        end_y = start_y
+
+        page.mouse.move(start_x, start_y)
+        page.mouse.down()
+        page.mouse.move(end_x, end_y, steps=12)
+        page.mouse.up()
+        page.wait_for_timeout(600)
+
+    except Exception as e:
+        log(f"Viewer-Zentrierung fehlgeschlagen: {e}")
 
 
 def save_viewer_screenshot(page, raw_path: Path, final_path: Path, debug_job_dir: Path, page_num: int):
+    center_viewer_canvas(page)
+
     clip = detect_viewer_clip(page, debug_job_dir=debug_job_dir, page_num=page_num)
 
     if clip:
         try:
-            cropped_clip = apply_right_crop_to_clip(clip)
-            page.screenshot(path=str(raw_path), clip=cropped_clip)
+            page.screenshot(path=str(raw_path), clip=clip)
             shutil.copy(str(raw_path), str(final_path))
             log(f"Viewer-Clip-Screenshot gespeichert für Seite {page_num}: {raw_path.name}")
             return
@@ -485,7 +531,8 @@ def save_viewer_screenshot(page, raw_path: Path, final_path: Path, debug_job_dir
 
 def create_page_metadata(
     book_dir: Path,
-    page_number: int,
+    local_page_number: int,
+    source_page_number: int,
     image_path: Path,
     source_url: str,
     ocr_text: str,
@@ -493,15 +540,22 @@ def create_page_metadata(
     try:
         create_page_json_for_page(
             book_folder=str(book_dir),
-            page_number=page_number,
+            page_number=local_page_number,
             image_file=image_path.name,
             image_path=str(image_path),
             ocr_text=ocr_text or "",
             source_url=source_url,
         )
-        log(f"page_{page_number}.json erzeugt")
+
+        page_json_path = book_dir / f"page_{local_page_number:04d}.json"
+        if page_json_path.exists():
+            data = json.loads(page_json_path.read_text(encoding="utf-8"))
+            data["source_page_number"] = source_page_number
+            page_json_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        log(f"page_{local_page_number:04d}.json erzeugt (source_page_number={source_page_number})")
     except Exception as e:
-        log(f"page.json konnte nicht erzeugt werden für Seite {page_number}: {e}")
+        log(f"page.json konnte nicht erzeugt werden für lokale Seite {local_page_number}: {e}")
 
 
 def update_status(save_job_status, job_id, book_name, status, message, saved_count=0, current_page=None, pdf_path=None):
@@ -536,11 +590,6 @@ def update_status(save_job_status, job_id, book_name, status, message, saved_cou
 
 
 def analyze_page_content_type(image_path: Path) -> dict:
-    """
-    Bildbasierte Heuristik:
-    - Titel-/Vorspannseiten haben viel Weißraum und relativ wenig dunkle Pixel
-    - Inhaltsseiten mit Handschrift haben deutlich mehr dunkle Pixel und mehr verteilte Zeilenstrukturen
-    """
     img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
     if img is None:
         return {
@@ -550,30 +599,24 @@ def analyze_page_content_type(image_path: Path) -> dict:
             "line_bands": None,
         }
 
-    # Leichte Glättung
     blur = cv2.GaussianBlur(img, (3, 3), 0)
 
-    # Dunkle Pixel
     dark_mask = blur < 210
     dark_ratio = float(dark_mask.mean())
 
-    # Horizontale Verteilung
     row_density = dark_mask.mean(axis=1)
     line_bands = int((row_density > 0.03).sum())
 
-    # Unterer Bereich ist bei echten Eintragsseiten oft deutlich "dunkler"
     h = img.shape[0]
     lower = blur[int(h * 0.45):, :]
     lower_dark_ratio = float((lower < 210).mean()) if lower.size else 0.0
 
-    # Titelblatt: wenig dunkle Pixel, wenige Zeilenbänder, unten viel Weiß
     looks_like_title = (
         dark_ratio < 0.055 and
         line_bands < 340 and
         lower_dark_ratio < 0.06
     )
 
-    # Zusätzliche Erkennung: sehr großer Weißraum oben/mittig
     upper = blur[:int(h * 0.40), :]
     upper_dark_ratio = float((upper < 210).mean()) if upper.size else 0.0
 
@@ -604,10 +647,6 @@ def analyze_page_content_type(image_path: Path) -> dict:
 
 
 def find_first_content_page(page, base_url: str, start_page: int, debug_job_dir: Path, job_id: str, book_name: str, save_job_status):
-    """
-    Prüft die ersten Seiten auf Basis des korrekten Screenshots und sucht
-    die erste echte Inhaltsseite.
-    """
     for probe_page in range(start_page, start_page + SMART_SKIP_LIMIT):
         current_page_url = make_page_url(base_url, probe_page)
 
@@ -752,54 +791,59 @@ def run_download_job(job_id, url, book_name, save_job_status):
 
             log(f"Download beginnt ab Inhaltsseite {content_start_page}")
 
-            page_num = content_start_page
+            source_page_num = content_start_page
             saved_count = 0
 
-            for _ in range(DEBUG_PAGE_COUNT):
-                current_page_url = make_page_url(url, page_num)
+            for local_page_num in range(1, DEBUG_PAGE_COUNT + 1):
+                current_page_url = make_page_url(url, source_page_num)
 
                 update_status(
                     save_job_status=save_job_status,
                     job_id=job_id,
                     book_name=book_name,
                     status="running",
-                    message=f"Lade Seite {page_num} ...",
+                    message=f"Lade Quellseite {source_page_num} ...",
                     saved_count=saved_count,
-                    current_page=page_num,
+                    current_page=source_page_num,
                 )
 
-                log(f"Lade Seite {page_num}: {current_page_url}")
+                log(f"Lade Quellseite {source_page_num}: {current_page_url}")
                 page.goto(current_page_url)
                 page.wait_for_timeout(3500)
                 time.sleep(short_pause())
 
-                raw_page_path = debug_job_dir / f"raw_{page_num}.png"
-                final_page_path = book_dir / f"page_{page_num}.png"
+                raw_page_path = debug_job_dir / f"raw_source_{source_page_num}.png"
+                final_page_path = book_dir / f"page_{local_page_num:04d}.png"
 
                 save_viewer_screenshot(
                     page=page,
                     raw_path=raw_page_path,
                     final_path=final_page_path,
                     debug_job_dir=debug_job_dir,
-                    page_num=page_num,
+                    page_num=source_page_num,
                 )
 
                 page_ocr_text, page_ocr_error = read_page_ocr_debug(raw_page_path)
-                write_text_file(book_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
-                write_text_file(debug_job_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
+                write_text_file(book_dir / f"page_{local_page_num:04d}.ocr.txt", page_ocr_text or "")
+                write_text_file(debug_job_dir / f"page_{local_page_num:04d}.ocr.txt", page_ocr_text or "")
 
                 if page_ocr_error:
-                    log(f"OCR-Debug Fehler Seite {page_num}: {page_ocr_error}")
+                    log(f"OCR-Debug Fehler Quellseite {source_page_num}: {page_ocr_error}")
                 else:
-                    log(f"OCR-Debug Zeichen Seite {page_num}: {len(page_ocr_text or '')}")
+                    log(f"OCR-Debug Zeichen Quellseite {source_page_num}: {len(page_ocr_text or '')}")
 
                 create_page_metadata(
                     book_dir=book_dir,
-                    page_number=page_num,
+                    local_page_number=local_page_num,
+                    source_page_number=source_page_num,
                     image_path=final_page_path,
                     source_url=current_page_url,
                     ocr_text=page_ocr_text,
                 )
+
+                # Vorbereitung für spätere Eintragsausschnitte:
+                # Hier können wir später pro final_page_path Zeilen-/Blockerkennung machen
+                # und entry_0001_01.png + entry_0001_01.json usw. erzeugen.
 
                 saved_count += 1
 
@@ -808,12 +852,12 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     job_id=job_id,
                     book_name=book_name,
                     status="running",
-                    message=f"Seite {page_num} gespeichert",
+                    message=f"Seite {local_page_num:04d} gespeichert (Quelle {source_page_num})",
                     saved_count=saved_count,
-                    current_page=page_num,
+                    current_page=source_page_num,
                 )
 
-                page_num += 1
+                source_page_num += 1
                 time.sleep(human_pause())
 
             update_status(
@@ -823,7 +867,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 status="running",
                 message="Erzeuge PDF ...",
                 saved_count=saved_count,
-                current_page=page_num - 1,
+                current_page=source_page_num - 1,
             )
 
             save_book_metadata(book_dir, meta, url)
@@ -836,7 +880,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 status="finished",
                 message="Download abgeschlossen.",
                 saved_count=saved_count,
-                current_page=page_num - 1,
+                current_page=source_page_num - 1,
                 pdf_path=pdf_path,
             )
 
