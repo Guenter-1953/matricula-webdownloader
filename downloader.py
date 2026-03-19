@@ -37,6 +37,7 @@ DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 DEBUG_PAGE_COUNT = 3
+RIGHT_CROP_PX = 300
 
 
 def log(msg: str):
@@ -284,12 +285,21 @@ def save_book_metadata(book_dir: Path, meta: dict, source_url: str):
     log(f"book.json gespeichert in {book_dir}")
 
 
+def make_unique_target_dir(base_name: str) -> Path:
+    base_dir = BOOKS_DIR / base_name
+    if not base_dir.exists():
+        return base_dir
+
+    counter = 2
+    while True:
+        candidate = BOOKS_DIR / f"{base_name}_dup{counter}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
 def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: dict):
     log(f"Rename-Prüfung: aktueller book_name={book_name}")
-
-    if not should_auto_rename(book_name):
-        log("Kein Auto-Rename, da Buchname kein technischer Platzhalter ist")
-        return book_dir, book_name, pdf_path, False
 
     new_name_parts = [
         sanitize(meta.get("pfarre_ort") or "unbekannt"),
@@ -300,28 +310,27 @@ def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: 
     if meta.get("datum_von") or meta.get("datum_bis"):
         new_name_parts.append(f"{meta.get('datum_von') or 'xxxx'}_{meta.get('datum_bis') or 'xxxx'}")
 
-    new_name = "_".join([part for part in new_name_parts if part])
+    display_name = "_".join([part for part in new_name_parts if part])
 
-    log(f"Neuer Zielname berechnet: {new_name}")
-
-    if not new_name or "None" in new_name:
+    if not display_name or "None" in display_name:
         log("Neuer Name ungültig, daher kein Rename")
-        return book_dir, book_name, pdf_path, False
+        return book_dir, book_name, pdf_path, False, book_name
 
-    new_dir = BOOKS_DIR / new_name
+    if not should_auto_rename(book_name):
+        log("Kein Auto-Rename, da Buchname kein technischer Platzhalter ist")
+        return book_dir, book_name, pdf_path, False, book_name
 
-    if new_dir == book_dir:
+    target_dir = make_unique_target_dir(display_name)
+    final_fs_name = target_dir.name
+
+    if target_dir == book_dir:
         log("Rename nicht nötig, Zielordner entspricht aktuellem Ordner")
-        return book_dir, book_name, pdf_path, False
+        return book_dir, book_name, pdf_path, False, display_name
 
-    if new_dir.exists():
-        log(f"Rename nicht möglich, Zielordner existiert bereits: {new_dir}")
-        return book_dir, book_name, pdf_path, False
+    shutil.move(str(book_dir), str(target_dir))
+    log(f"Buchordner umbenannt: {book_dir.name} -> {final_fs_name}")
 
-    shutil.move(str(book_dir), str(new_dir))
-    log(f"Buchordner umbenannt: {book_dir.name} -> {new_name}")
-
-    return new_dir, new_name, PDF_DIR / f"{new_name}.pdf", True
+    return target_dir, final_fs_name, PDF_DIR / f"{final_fs_name}.pdf", True, display_name
 
 
 def read_page_ocr_debug(path: Path):
@@ -376,7 +385,7 @@ def detect_viewer_clip(page, debug_job_dir: Path = None, page_num: int = None):
             info.centerX = centerX;
             info.centerY = centerY;
             info.minSizeOk = rect.width >= 800 && rect.height >= 800;
-            info.centerOk = !(centerX < viewportWidth * 0.25 || centerX > viewportWidth * 0.65);
+            info.centerOk = !(centerX < viewportWidth * 0.25 || centerX > viewportWidth * 0.75);
             info.centerYOk = !(centerY < viewportHeight * 0.20 || centerY > viewportHeight * 0.90);
             info.visibleOk = !(rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight);
             info.styleOk = !(style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0);
@@ -435,12 +444,33 @@ def detect_viewer_clip(page, debug_job_dir: Path = None, page_num: int = None):
         return None
 
 
+def apply_right_crop_to_clip(clip: dict) -> dict:
+    if not clip:
+        return clip
+
+    cropped_width = max(300, clip["width"] - RIGHT_CROP_PX)
+
+    new_clip = {
+        "x": clip["x"],
+        "y": clip["y"],
+        "width": cropped_width,
+        "height": clip["height"],
+    }
+
+    log(
+        "Rechtsbeschnitt angewendet: "
+        f"alt_w={clip['width']} neu_w={new_clip['width']} crop_px={RIGHT_CROP_PX}"
+    )
+    return new_clip
+
+
 def save_viewer_screenshot(page, raw_path: Path, final_path: Path, debug_job_dir: Path, page_num: int):
     clip = detect_viewer_clip(page, debug_job_dir=debug_job_dir, page_num=page_num)
 
     if clip:
         try:
-            page.screenshot(path=str(raw_path), clip=clip)
+            cropped_clip = apply_right_crop_to_clip(clip)
+            page.screenshot(path=str(raw_path), clip=cropped_clip)
             shutil.copy(str(raw_path), str(final_path))
             log(f"Viewer-Clip-Screenshot gespeichert für Seite {page_num}: {raw_path.name}")
             return
@@ -556,7 +586,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
             meta = enrich_meta_from_dom(meta, dom_candidates)
 
             old_book_name = book_name
-            book_dir, book_name, pdf_path, renamed = maybe_rename_book_dir(
+            book_dir, fs_book_name, pdf_path, renamed, display_name = maybe_rename_book_dir(
                 book_dir=book_dir,
                 book_name=book_name,
                 pdf_path=pdf_path,
@@ -564,7 +594,9 @@ def run_download_job(job_id, url, book_name, save_job_status):
             )
 
             if renamed:
-                log(f"Jobname geändert: {old_book_name} -> {book_name}")
+                log(f"Dateisystem-Name geändert: {old_book_name} -> {fs_book_name}")
+                log(f"Anzeigename für Job: {display_name}")
+                book_name = display_name
                 update_status(
                     save_job_status=save_job_status,
                     job_id=job_id,
@@ -575,7 +607,21 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     current_page=start_page,
                 )
             else:
-                log(f"Jobname unverändert: {book_name}")
+                # Auch ohne Rename soll der schöne Name im Job stehen
+                if display_name and display_name != old_book_name:
+                    log(f"Kein Rename nötig/möglich, aber Anzeigename wird gesetzt: {display_name}")
+                    book_name = display_name
+                    update_status(
+                        save_job_status=save_job_status,
+                        job_id=job_id,
+                        book_name=book_name,
+                        status="running",
+                        message="Buchname wurde automatisch ermittelt.",
+                        saved_count=0,
+                        current_page=start_page,
+                    )
+                else:
+                    log(f"Jobname unverändert: {book_name}")
 
             save_book_metadata(book_dir, meta, url)
 
