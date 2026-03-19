@@ -39,6 +39,10 @@ DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 DEBUG_PAGE_COUNT = 3
 
 
+def log(msg: str):
+    print(f"[DEBUG] {msg}")
+
+
 def human_pause() -> float:
     return round(random.uniform(1.0, 2.0), 2)
 
@@ -51,17 +55,20 @@ def write_text_file(path: Path, text: str):
     path.write_text(text or "", encoding="utf-8")
 
 
-def save_json(path: Path, data: dict):
+def save_json(path: Path, data):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def create_pdf(book_dir: Path, pdf_path: Path):
     images = sorted(book_dir.glob("page_*.png"))
     if not images:
+        log(f"Keine Bilder für PDF in {book_dir}")
         return
 
     with open(pdf_path, "wb") as f:
         f.write(img2pdf.convert([str(p) for p in images]))
+
+    log(f"PDF erzeugt: {pdf_path}")
 
 
 def get_page_number_from_url(url: str) -> int:
@@ -114,9 +121,10 @@ def extract_book_meta_from_url(url: str) -> dict:
             result["bistum"] = parts[2]
             result["pfarre_ort"] = prettify_slug(parts[3])
             result["signatur"] = parts[4]
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"extract_book_meta_from_url Fehler: {e}")
 
+    log(f"URL-Metadaten erkannt: {result}")
     return result
 
 
@@ -209,13 +217,15 @@ def extract_dom_text_candidates(page) -> dict:
     )
     candidates["title"] = normalize_whitespace(combined)
 
+    log(f"DOM page_title: {candidates['page_title'][:150]}")
+    log(f"DOM body_text Anfang: {candidates['body_text'][:200]}")
     return candidates
 
 
 def build_initial_meta(url: str) -> dict:
     url_meta = extract_book_meta_from_url(url)
 
-    return {
+    meta = {
         "country": url_meta.get("country") or "deutschland",
         "bistum": url_meta.get("bistum") or "unbekannt",
         "pfarre_ort": url_meta.get("pfarre_ort") or "unbekannt",
@@ -225,6 +235,8 @@ def build_initial_meta(url: str) -> dict:
         "datum_bis": None,
         "dom_title_text": "",
     }
+    log(f"Initiale Metadaten: {meta}")
+    return meta
 
 
 def enrich_meta_from_dom(meta: dict, dom_candidates: dict) -> dict:
@@ -250,6 +262,7 @@ def enrich_meta_from_dom(meta: dict, dom_candidates: dict) -> dict:
     if year_to:
         meta["datum_bis"] = year_to
 
+    log(f"Metadaten nach DOM-Anreicherung: {meta}")
     return meta
 
 
@@ -268,11 +281,15 @@ def save_book_metadata(book_dir: Path, meta: dict, source_url: str):
     }
 
     save_json(book_dir / "book.json", data)
+    log(f"book.json gespeichert in {book_dir}")
 
 
 def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: dict):
+    log(f"Rename-Prüfung: aktueller book_name={book_name}")
+
     if not should_auto_rename(book_name):
-        return book_dir, book_name, pdf_path
+        log("Kein Auto-Rename, da Buchname kein technischer Platzhalter ist")
+        return book_dir, book_name, pdf_path, False
 
     new_name_parts = [
         sanitize(meta.get("pfarre_ort") or "unbekannt"),
@@ -284,19 +301,27 @@ def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: 
         new_name_parts.append(f"{meta.get('datum_von') or 'xxxx'}_{meta.get('datum_bis') or 'xxxx'}")
 
     new_name = "_".join([part for part in new_name_parts if part])
+
+    log(f"Neuer Zielname berechnet: {new_name}")
+
+    if not new_name or "None" in new_name:
+        log("Neuer Name ungültig, daher kein Rename")
+        return book_dir, book_name, pdf_path, False
+
     new_dir = BOOKS_DIR / new_name
 
     if new_dir == book_dir:
-        return book_dir, book_name, pdf_path
+        log("Rename nicht nötig, Zielordner entspricht aktuellem Ordner")
+        return book_dir, book_name, pdf_path, False
 
     if new_dir.exists():
-        print(f"[WARN] Zielordner existiert bereits, kein Rename: {new_dir}")
-        return book_dir, book_name, pdf_path
+        log(f"Rename nicht möglich, Zielordner existiert bereits: {new_dir}")
+        return book_dir, book_name, pdf_path, False
 
     shutil.move(str(book_dir), str(new_dir))
-    print(f"[INFO] Buchordner umbenannt: {book_dir.name} -> {new_name}")
+    log(f"Buchordner umbenannt: {book_dir.name} -> {new_name}")
 
-    return new_dir, new_name, PDF_DIR / f"{new_name}.pdf"
+    return new_dir, new_name, PDF_DIR / f"{new_name}.pdf", True
 
 
 def read_page_ocr_debug(path: Path):
@@ -317,16 +342,7 @@ def read_page_ocr_debug(path: Path):
         return "", str(e)
 
 
-def detect_viewer_clip(page):
-    """
-    Sucht das wahrscheinlich richtige Viewer-Element.
-
-    Strengere Strategie:
-    - nur img/canvas/svg
-    - mindestens 800x800
-    - Mittelpunkt muss zentral liegen
-    - rechter Rand enger gefasst, damit die Seitenliste eher rausfällt
-    """
+def detect_viewer_clip(page, debug_job_dir: Path = None, page_num: int = None):
     script = """
     () => {
         const all = Array.from(document.querySelectorAll('img, canvas, svg'));
@@ -337,76 +353,103 @@ def detect_viewer_clip(page):
             const style = window.getComputedStyle(el);
 
             if (!rect) continue;
-            if (style.display === 'none' || style.visibility === 'hidden') continue;
-            if (Number(style.opacity || '1') === 0) continue;
 
-            if (rect.width < 800 || rect.height < 800) continue;
-
-            const viewportWidth = window.innerWidth;
-            const viewportHeight = window.innerHeight;
-
-            const centerX = rect.left + rect.width / 2;
-            const centerY = rect.top + rect.height / 2;
-
-            if (centerX < viewportWidth * 0.25 || centerX > viewportWidth * 0.65) continue;
-            if (centerY < viewportHeight * 0.20 || centerY > viewportHeight * 0.90) continue;
-
-            if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight) continue;
-
-            candidates.push({
+            const info = {
                 tag: el.tagName.toLowerCase(),
                 left: rect.left,
                 top: rect.top,
                 width: rect.width,
                 height: rect.height,
-                area: rect.width * rect.height
-            });
+                area: rect.width * rect.height,
+                className: el.className ? String(el.className) : '',
+                id: el.id ? String(el.id) : '',
+                display: style.display,
+                visibility: style.visibility,
+                opacity: Number(style.opacity || '1')
+            };
+
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+
+            info.centerX = centerX;
+            info.centerY = centerY;
+            info.minSizeOk = rect.width >= 800 && rect.height >= 800;
+            info.centerOk = !(centerX < viewportWidth * 0.25 || centerX > viewportWidth * 0.65);
+            info.centerYOk = !(centerY < viewportHeight * 0.20 || centerY > viewportHeight * 0.90);
+            info.visibleOk = !(rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight);
+            info.styleOk = !(style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0);
+
+            candidates.push(info);
         }
 
-        candidates.sort((a, b) => b.area - a.area);
-        return candidates.length ? candidates[0] : null;
+        const filtered = candidates.filter(c =>
+            c.minSizeOk && c.centerOk && c.centerYOk && c.visibleOk && c.styleOk
+        );
+
+        filtered.sort((a, b) => b.area - a.area);
+
+        return {
+            all: candidates,
+            filtered: filtered,
+            best: filtered.length ? filtered[0] : null
+        };
     }
     """
 
     try:
         result = page.evaluate(script)
-        if not result:
-            print("[WARN] Kein Viewer-Kandidat gefunden")
+
+        if debug_job_dir and page_num is not None:
+            save_json(debug_job_dir / f"viewer_candidates_page_{page_num}.json", result)
+
+        all_count = len(result.get("all", []))
+        filtered_count = len(result.get("filtered", []))
+        best = result.get("best")
+
+        log(f"Viewer-Kandidaten gesamt: {all_count}, gefiltert: {filtered_count}")
+
+        if not best:
+            log("Kein Viewer-Kandidat nach Filterung gefunden")
             return None
 
         clip = {
-            "x": max(0, result["left"]),
-            "y": max(0, result["top"]),
-            "width": result["width"],
-            "height": result["height"],
+            "x": max(0, best["left"]),
+            "y": max(0, best["top"]),
+            "width": best["width"],
+            "height": best["height"],
         }
 
-        print(
-            "[INFO] Viewer-Kandidat gewählt: "
-            f"tag={result.get('tag')} "
-            f"x={clip['x']} y={clip['y']} "
-            f"w={clip['width']} h={clip['height']}"
+        log(
+            "Viewer-Kandidat gewählt: "
+            f"tag={best.get('tag')} "
+            f"id={best.get('id')} "
+            f"class={best.get('className')} "
+            f"x={clip['x']} y={clip['y']} w={clip['width']} h={clip['height']}"
         )
         return clip
 
     except Exception as e:
-        print(f"[WARN] detect_viewer_clip Fehler: {e}")
+        log(f"detect_viewer_clip Fehler: {e}")
         return None
 
 
-def save_viewer_screenshot(page, raw_path: Path, final_path: Path):
-    clip = detect_viewer_clip(page)
+def save_viewer_screenshot(page, raw_path: Path, final_path: Path, debug_job_dir: Path, page_num: int):
+    clip = detect_viewer_clip(page, debug_job_dir=debug_job_dir, page_num=page_num)
 
     if clip:
         try:
             page.screenshot(path=str(raw_path), clip=clip)
             shutil.copy(str(raw_path), str(final_path))
+            log(f"Viewer-Clip-Screenshot gespeichert für Seite {page_num}: {raw_path.name}")
             return
         except Exception as e:
-            print(f"[WARN] Viewer-Clip-Screenshot fehlgeschlagen, fallback full page: {e}")
+            log(f"Viewer-Clip-Screenshot fehlgeschlagen, Fallback full page: {e}")
 
     page.screenshot(path=str(raw_path), full_page=True)
     shutil.copy(str(raw_path), str(final_path))
+    log(f"Full-Page-Fallback-Screenshot gespeichert für Seite {page_num}: {raw_path.name}")
 
 
 def create_page_metadata(
@@ -425,12 +468,18 @@ def create_page_metadata(
             ocr_text=ocr_text or "",
             source_url=source_url,
         )
-        print(f"[INFO] page_{page_number}.json erzeugt")
+        log(f"page_{page_number}.json erzeugt")
     except Exception as e:
-        print(f"[WARN] page.json konnte nicht erzeugt werden für Seite {page_number}: {e}")
+        log(f"page.json konnte nicht erzeugt werden für Seite {page_number}: {e}")
 
 
 def update_status(save_job_status, job_id, book_name, status, message, saved_count=0, current_page=None, pdf_path=None):
+    log(
+        f"Statusupdate: job_id={job_id} "
+        f"book_name={book_name} status={status} "
+        f"saved_count={saved_count} current_page={current_page} message={message}"
+    )
+
     if not save_job_status:
         return
 
@@ -452,7 +501,7 @@ def update_status(save_job_status, job_id, book_name, status, message, saved_cou
     try:
         save_job_status(job_id, payload)
     except Exception as e:
-        print(f"[WARN] save_job_status fehlgeschlagen: {e}")
+        log(f"save_job_status fehlgeschlagen: {e}")
 
 
 def run_download_job(job_id, url, book_name, save_job_status):
@@ -465,6 +514,8 @@ def run_download_job(job_id, url, book_name, save_job_status):
 
     meta = build_initial_meta(url)
     start_page = get_page_number_from_url(url)
+
+    log(f"Job gestartet: job_id={job_id} book_name={book_name} start_page={start_page}")
 
     update_status(
         save_job_status=save_job_status,
@@ -501,14 +552,31 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 debug_job_dir / "dom_candidates.txt",
                 json.dumps(dom_candidates, indent=2, ensure_ascii=False)
             )
+
             meta = enrich_meta_from_dom(meta, dom_candidates)
 
-            book_dir, book_name, pdf_path = maybe_rename_book_dir(
+            old_book_name = book_name
+            book_dir, book_name, pdf_path, renamed = maybe_rename_book_dir(
                 book_dir=book_dir,
                 book_name=book_name,
                 pdf_path=pdf_path,
                 meta=meta,
             )
+
+            if renamed:
+                log(f"Jobname geändert: {old_book_name} -> {book_name}")
+                update_status(
+                    save_job_status=save_job_status,
+                    job_id=job_id,
+                    book_name=book_name,
+                    status="running",
+                    message="Buchname wurde automatisch ermittelt.",
+                    saved_count=0,
+                    current_page=start_page,
+                )
+            else:
+                log(f"Jobname unverändert: {book_name}")
+
             save_book_metadata(book_dir, meta, url)
 
             page_num = start_page
@@ -527,7 +595,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     current_page=page_num,
                 )
 
-                print(f"[INFO] Lade Seite {page_num}: {current_page_url}")
+                log(f"Lade Seite {page_num}: {current_page_url}")
                 page.goto(current_page_url)
                 page.wait_for_timeout(3500)
                 time.sleep(short_pause())
@@ -535,16 +603,22 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 raw_page_path = debug_job_dir / f"raw_{page_num}.png"
                 final_page_path = book_dir / f"page_{page_num}.png"
 
-                save_viewer_screenshot(page, raw_page_path, final_page_path)
+                save_viewer_screenshot(
+                    page=page,
+                    raw_path=raw_page_path,
+                    final_path=final_page_path,
+                    debug_job_dir=debug_job_dir,
+                    page_num=page_num,
+                )
 
                 page_ocr_text, page_ocr_error = read_page_ocr_debug(raw_page_path)
                 write_text_file(book_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
                 write_text_file(debug_job_dir / f"page_{page_num}.ocr.txt", page_ocr_text or "")
 
                 if page_ocr_error:
-                    print(f"[WARN] OCR-Debug Fehler Seite {page_num}: {page_ocr_error}")
+                    log(f"OCR-Debug Fehler Seite {page_num}: {page_ocr_error}")
                 else:
-                    print(f"[INFO] OCR-Debug Zeichen Seite {page_num}: {len(page_ocr_text or '')}")
+                    log(f"OCR-Debug Zeichen Seite {page_num}: {len(page_ocr_text or '')}")
 
                 create_page_metadata(
                     book_dir=book_dir,
@@ -594,6 +668,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
             )
 
             browser.close()
+            log(f"Job erfolgreich beendet: job_id={job_id} book_name={book_name}")
 
     except Exception as e:
         update_status(
@@ -605,4 +680,5 @@ def run_download_job(job_id, url, book_name, save_job_status):
             saved_count=0,
             current_page=start_page,
         )
+        log(f"Job mit Fehler beendet: {e}")
         raise
