@@ -36,8 +36,9 @@ PDF_DIR.mkdir(parents=True, exist_ok=True)
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-DEBUG_PAGE_COUNT = 3
+DEBUG_PAGE_COUNT = 5
 RIGHT_CROP_PX = 300
+SMART_SKIP_LIMIT = 8
 
 
 def log(msg: str):
@@ -45,11 +46,11 @@ def log(msg: str):
 
 
 def human_pause() -> float:
-    return round(random.uniform(1.0, 2.0), 2)
+    return round(random.uniform(8.0, 18.0), 2)
 
 
 def short_pause() -> float:
-    return round(random.uniform(0.4, 0.9), 2)
+    return round(random.uniform(1.2, 3.8), 2)
 
 
 def write_text_file(path: Path, text: str):
@@ -534,6 +535,121 @@ def update_status(save_job_status, job_id, book_name, status, message, saved_cou
         log(f"save_job_status fehlgeschlagen: {e}")
 
 
+def analyze_page_content_type(image_path: Path) -> dict:
+    """
+    Bildbasierte Heuristik:
+    - Titel-/Vorspannseiten haben viel Weißraum und relativ wenig dunkle Pixel
+    - Inhaltsseiten mit Handschrift haben deutlich mehr dunkle Pixel und mehr verteilte Zeilenstrukturen
+    """
+    img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return {
+            "is_content": True,
+            "reason": "Bild konnte nicht gelesen werden, nehme Inhaltsseite an.",
+            "dark_ratio": None,
+            "line_bands": None,
+        }
+
+    # Leichte Glättung
+    blur = cv2.GaussianBlur(img, (3, 3), 0)
+
+    # Dunkle Pixel
+    dark_mask = blur < 210
+    dark_ratio = float(dark_mask.mean())
+
+    # Horizontale Verteilung
+    row_density = dark_mask.mean(axis=1)
+    line_bands = int((row_density > 0.03).sum())
+
+    # Unterer Bereich ist bei echten Eintragsseiten oft deutlich "dunkler"
+    h = img.shape[0]
+    lower = blur[int(h * 0.45):, :]
+    lower_dark_ratio = float((lower < 210).mean()) if lower.size else 0.0
+
+    # Titelblatt: wenig dunkle Pixel, wenige Zeilenbänder, unten viel Weiß
+    looks_like_title = (
+        dark_ratio < 0.055 and
+        line_bands < 340 and
+        lower_dark_ratio < 0.06
+    )
+
+    # Zusätzliche Erkennung: sehr großer Weißraum oben/mittig
+    upper = blur[:int(h * 0.40), :]
+    upper_dark_ratio = float((upper < 210).mean()) if upper.size else 0.0
+
+    if dark_ratio < 0.07 and upper_dark_ratio < 0.04 and lower_dark_ratio < 0.08:
+        looks_like_title = True
+
+    result = {
+        "is_content": not looks_like_title,
+        "reason": (
+            "Inhaltsseite erkannt"
+            if not looks_like_title
+            else "Titel-/Vorspannseite erkannt"
+        ),
+        "dark_ratio": round(dark_ratio, 5),
+        "lower_dark_ratio": round(lower_dark_ratio, 5),
+        "upper_dark_ratio": round(upper_dark_ratio, 5),
+        "line_bands": line_bands,
+    }
+
+    log(
+        f"Bildanalyse {image_path.name}: "
+        f"is_content={result['is_content']} "
+        f"dark_ratio={result['dark_ratio']} "
+        f"lower_dark_ratio={result['lower_dark_ratio']} "
+        f"line_bands={result['line_bands']}"
+    )
+    return result
+
+
+def find_first_content_page(page, base_url: str, start_page: int, debug_job_dir: Path, job_id: str, book_name: str, save_job_status):
+    """
+    Prüft die ersten Seiten auf Basis des korrekten Screenshots und sucht
+    die erste echte Inhaltsseite.
+    """
+    for probe_page in range(start_page, start_page + SMART_SKIP_LIMIT):
+        current_page_url = make_page_url(base_url, probe_page)
+
+        update_status(
+            save_job_status=save_job_status,
+            job_id=job_id,
+            book_name=book_name,
+            status="running",
+            message=f"Prüfe Startseite {probe_page} ...",
+            saved_count=0,
+            current_page=probe_page,
+        )
+
+        log(f"Prüfe mögliche Startseite {probe_page}: {current_page_url}")
+        page.goto(current_page_url)
+        page.wait_for_timeout(3500)
+        time.sleep(short_pause())
+
+        probe_raw = debug_job_dir / f"probe_raw_{probe_page}.png"
+        probe_final = debug_job_dir / f"probe_page_{probe_page}.png"
+
+        save_viewer_screenshot(
+            page=page,
+            raw_path=probe_raw,
+            final_path=probe_final,
+            debug_job_dir=debug_job_dir,
+            page_num=probe_page,
+        )
+
+        analysis = analyze_page_content_type(probe_final)
+        save_json(debug_job_dir / f"probe_page_{probe_page}.analysis.json", analysis)
+
+        if analysis["is_content"]:
+            log(f"Erste Inhaltsseite gefunden: {probe_page}")
+            return probe_page
+
+        log(f"Seite {probe_page} übersprungen: {analysis['reason']}")
+
+    log(f"Keine eindeutige Inhaltsseite gefunden, verwende Startseite {start_page}")
+    return start_page
+
+
 def run_download_job(job_id, url, book_name, save_job_status):
     book_dir = BOOKS_DIR / book_name
     pdf_path = PDF_DIR / f"{book_name}.pdf"
@@ -575,7 +691,7 @@ def run_download_job(job_id, url, book_name, save_job_status):
             )
 
             page.goto(url)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(2500)
 
             dom_candidates = extract_dom_text_candidates(page)
             write_text_file(
@@ -607,7 +723,6 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     current_page=start_page,
                 )
             else:
-                # Auch ohne Rename soll der schöne Name im Job stehen
                 if display_name and display_name != old_book_name:
                     log(f"Kein Rename nötig/möglich, aber Anzeigename wird gesetzt: {display_name}")
                     book_name = display_name
@@ -625,7 +740,19 @@ def run_download_job(job_id, url, book_name, save_job_status):
 
             save_book_metadata(book_dir, meta, url)
 
-            page_num = start_page
+            content_start_page = find_first_content_page(
+                page=page,
+                base_url=url,
+                start_page=start_page,
+                debug_job_dir=debug_job_dir,
+                job_id=job_id,
+                book_name=book_name,
+                save_job_status=save_job_status,
+            )
+
+            log(f"Download beginnt ab Inhaltsseite {content_start_page}")
+
+            page_num = content_start_page
             saved_count = 0
 
             for _ in range(DEBUG_PAGE_COUNT):
