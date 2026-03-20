@@ -26,6 +26,5 @@ services:
     volumes:
       - /volume1/docker/matricula-webdownloader/data:/app/data
     environment:
-      - OPENAI_API_KEY=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
       - OPENAI_MODEL=gpt-4o-mini
     restart: unless-stopped
