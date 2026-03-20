@@ -5,3 +5,4 @@ pillow
 img2pdf
 numpy
 opencv-python-headless
+pytesseract
