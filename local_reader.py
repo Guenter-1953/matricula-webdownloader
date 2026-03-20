@@ -1,9 +1,9 @@
-
 import os
 from dataclasses import dataclass
 from typing import Any, Dict
 
 import cv2
+import numpy as np
 import pytesseract
 from PIL import Image
 
@@ -14,6 +14,7 @@ class LocalOCRConfig:
     psm: str = os.getenv("OCR_PSM", "6")
     oem: str = os.getenv("OCR_OEM", "1")
     tesseract_cmd: str = os.getenv("TESSERACT_CMD", "tesseract")
+    upscale_factor: float = float(os.getenv("OCR_UPSCALE_FACTOR", "2.0"))
 
 
 class LocalPageReader:
@@ -28,7 +29,18 @@ class LocalPageReader:
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
+        if self.config.upscale_factor and self.config.upscale_factor != 1.0:
+            gray = cv2.resize(
+                gray,
+                None,
+                fx=self.config.upscale_factor,
+                fy=self.config.upscale_factor,
+                interpolation=cv2.INTER_CUBIC,
+            )
+
         gray = cv2.GaussianBlur(gray, (3, 3), 0)
+
+        gray = cv2.equalizeHist(gray)
 
         bw = cv2.adaptiveThreshold(
             gray,
@@ -36,8 +48,11 @@ class LocalPageReader:
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY,
             31,
-            15,
+            11,
         )
+
+        kernel = np.ones((1, 1), np.uint8)
+        bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel)
 
         return Image.fromarray(bw)
 
@@ -78,5 +93,6 @@ class LocalPageReader:
                 "lang": self.config.lang,
                 "psm": self.config.psm,
                 "oem": self.config.oem,
+                "upscale_factor": self.config.upscale_factor,
             },
         }
