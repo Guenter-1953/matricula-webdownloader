@@ -9,7 +9,7 @@ from downloader import run_download_job
 app = Flask(__name__)
 
 APP_DISPLAY_VERSION = "v1.1.0"
-BUILD_DATE = "2026-03-16"
+BUILD_DATE = "2026-03-20"
 
 
 def get_app_version_text():
