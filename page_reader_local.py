@@ -5,6 +5,10 @@ from pathlib import Path
 from local_reader import LocalPageReader
 
 
+MIN_CONFIDENCE = 55.0
+MIN_TEXT_LENGTH = 300
+
+
 def derive_output_dir(image_path: Path) -> Path:
     output_dir = image_path.parent / "entry_debug"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -20,6 +24,11 @@ def build_payload(image_path: Path) -> dict:
     result = reader.read_page(str(image_path))
 
     text = result.get("text", "").strip()
+    confidence = float(result.get("confidence", 0.0))
+
+    likely_good_enough = (
+        confidence >= MIN_CONFIDENCE and len(text) >= MIN_TEXT_LENGTH
+    )
 
     return {
         "source_image": str(image_path),
@@ -29,12 +38,22 @@ def build_payload(image_path: Path) -> dict:
         "entry_count": 0,
         "entries": [],
         "ocr_text": text,
-        "confidence": result.get("confidence", 0.0),
+        "confidence": confidence,
         "meta": result.get("meta", {}),
+        "decision": {
+            "use_local_result": likely_good_enough,
+            "send_to_openai": not likely_good_enough,
+            "reason": {
+                "min_confidence_required": MIN_CONFIDENCE,
+                "min_text_length_required": MIN_TEXT_LENGTH,
+                "actual_confidence": confidence,
+                "actual_text_length": len(text),
+            },
+        },
         "notes": [
             "Dies ist die lokale OCR-Ausgabe mit Tesseract.",
             "Die eigentliche Zerlegung in Einträge folgt später.",
-            "Das Ausgabeformat bleibt mit dem restlichen Workflow kompatibel."
+            "OpenAI soll nur verwendet werden, wenn das lokale Ergebnis zu schwach ist."
         ],
     }
 
@@ -62,6 +81,10 @@ def main():
     print(len(payload.get("ocr_text", "")))
     print("Confidence:")
     print(payload.get("confidence", 0.0))
+    print("Use local result:")
+    print(payload["decision"]["use_local_result"])
+    print("Send to OpenAI:")
+    print(payload["decision"]["send_to_openai"])
 
 
 if __name__ == "__main__":
