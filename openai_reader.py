@@ -1,6 +1,6 @@
 import os
 import base64
-from pathlib import Path
+import re
 from openai import OpenAI
 
 
@@ -17,6 +17,15 @@ class OpenAIPageReader:
         with open(image_path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
 
+    def clean_json_text(self, text: str) -> str:
+        value = (text or "").strip()
+
+        if value.startswith("```"):
+            value = re.sub(r"^```(?:json)?\s*", "", value, flags=re.IGNORECASE)
+            value = re.sub(r"\s*```$", "", value)
+
+        return value.strip()
+
     def read_page(self, image_path: str) -> dict:
         base64_image = self.encode_image(image_path)
 
@@ -25,8 +34,10 @@ Du bist ein Experte für historische Kirchenbücher.
 
 Aufgabe:
 - Lies die Seite vollständig
-- Erkenne alle Einträge (Trauungen)
-- Transkribiere sauber (auch Latein → Deutsch)
+- Erkenne alle Einträge
+- Gib auch bei schwieriger Handschrift dein bestmögliches Ergebnis
+- Wenn es eine Übersichts- oder Indexseite ist, erkenne die dort genannten Einträge ebenfalls
+- Transkribiere wichtige Inhalte sinnvoll
 - Strukturiere die Daten
 
 Gib ausschließlich JSON zurück im Format:
@@ -34,7 +45,7 @@ Gib ausschließlich JSON zurück im Format:
 {
   "entries": [
     {
-      "type": "marriage",
+      "type": "",
       "date": "",
       "groom": {
         "name": "",
@@ -52,6 +63,8 @@ Gib ausschließlich JSON zurück im Format:
 
 Wichtig:
 - keine Erklärungen
+- keine Einleitung
+- keine Markdown-Codeblöcke
 - nur JSON
 """
 
@@ -72,10 +85,12 @@ Wichtig:
             max_output_tokens=2000,
         )
 
-        text = response.output[0].content[0].text
+        text = response.output_text
+        cleaned_text = self.clean_json_text(text)
 
         return {
             "engine": "openai",
             "model": self.model,
-            "raw_response": text
+            "raw_response": text,
+            "cleaned_response": cleaned_text,
         }
