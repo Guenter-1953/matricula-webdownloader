@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from local_reader import LocalPageReader
+from review_queue import add_page
 
 
 MIN_CONFIDENCE = 55.0
@@ -30,12 +31,23 @@ def build_local_result(image_path: Path) -> dict:
         confidence >= MIN_CONFIDENCE and len(text) >= MIN_TEXT_LENGTH
     )
 
+    queue_result = None
+
     if use_local_result:
         processing_status = "done_local"
         next_action = "continue_pipeline"
     else:
         processing_status = "needs_review"
         next_action = "queue_for_manual_or_ai_review"
+        queue_result = add_page(
+            str(image_path),
+            reason={
+                "min_confidence_required": MIN_CONFIDENCE,
+                "min_text_length_required": MIN_TEXT_LENGTH,
+                "actual_confidence": confidence,
+                "actual_text_length": len(text),
+            },
+        )
 
     return {
         "source_image": str(image_path),
@@ -59,10 +71,11 @@ def build_local_result(image_path: Path) -> dict:
                 "actual_text_length": len(text),
             },
         },
+        "review_queue": queue_result,
         "notes": [
             "Zentrale Reader-Ausgabe.",
             "Lokaler OCR-Versuch wurde zuerst ausgeführt.",
-            "Schwache Seiten werden nur markiert, noch nicht automatisch an OpenAI gesendet."
+            "Schwache Seiten werden automatisch in die Review-Queue eingetragen."
         ],
     }
 
@@ -92,6 +105,8 @@ def main():
     print(payload.get("next_action"))
     print("Confidence:")
     print(payload.get("confidence", 0.0))
+    print("Review queue status:")
+    print((payload.get("review_queue") or {}).get("status"))
 
 
 if __name__ == "__main__":
