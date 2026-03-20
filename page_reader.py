@@ -3,7 +3,6 @@ import sys
 from pathlib import Path
 
 from local_reader import LocalPageReader
-from openai_reader import OpenAIPageReader
 
 
 MIN_CONFIDENCE = 55.0
@@ -20,7 +19,7 @@ def derive_output_path(image_path: Path) -> Path:
     return derive_output_dir(image_path) / f"{image_path.stem}_page_events.json"
 
 
-def run_local_reader(image_path: Path) -> dict:
+def build_local_result(image_path: Path) -> dict:
     reader = LocalPageReader()
     result = reader.read_page(str(image_path))
 
@@ -31,17 +30,28 @@ def run_local_reader(image_path: Path) -> dict:
         confidence >= MIN_CONFIDENCE and len(text) >= MIN_TEXT_LENGTH
     )
 
+    if use_local_result:
+        processing_status = "done_local"
+        next_action = "continue_pipeline"
+    else:
+        processing_status = "needs_review"
+        next_action = "queue_for_manual_or_ai_review"
+
     return {
         "source_image": str(image_path),
         "page_id": image_path.stem,
+        "processing_status": processing_status,
+        "next_action": next_action,
         "engine": result.get("engine", "tesseract"),
         "model": "tesseract-local",
+        "entry_count": 0,
+        "entries": [],
         "ocr_text": text,
         "confidence": confidence,
         "meta": result.get("meta", {}),
         "decision": {
             "use_local_result": use_local_result,
-            "send_to_openai": not use_local_result,
+            "send_to_openai": False,
             "reason": {
                 "min_confidence_required": MIN_CONFIDENCE,
                 "min_text_length_required": MIN_TEXT_LENGTH,
@@ -49,85 +59,10 @@ def run_local_reader(image_path: Path) -> dict:
                 "actual_text_length": len(text),
             },
         },
-    }
-
-
-def run_openai_reader(image_path: Path) -> dict:
-    reader = OpenAIPageReader()
-    result = reader.read_page(str(image_path))
-
-    raw_response = result.get("raw_response", "").strip()
-
-    parsed_json = None
-    parse_error = None
-
-    try:
-        parsed_json = json.loads(raw_response)
-    except Exception as e:
-        parse_error = str(e)
-
-    return {
-        "engine": result.get("engine", "openai"),
-        "model": result.get("model", ""),
-        "raw_response": raw_response,
-        "parsed_json": parsed_json,
-        "parse_error": parse_error,
-    }
-
-
-def build_payload(image_path: Path) -> dict:
-    local_result = run_local_reader(image_path)
-
-    if local_result["decision"]["use_local_result"]:
-        return {
-            "source_image": local_result["source_image"],
-            "page_id": local_result["page_id"],
-            "processing_status": "done_local",
-            "next_action": "continue_pipeline",
-            "engine": local_result["engine"],
-            "model": local_result["model"],
-            "entry_count": 0,
-            "entries": [],
-            "ocr_text": local_result["ocr_text"],
-            "confidence": local_result["confidence"],
-            "meta": local_result["meta"],
-            "decision": local_result["decision"],
-            "notes": [
-                "Lokaler Reader war ausreichend.",
-                "OpenAI wurde nicht verwendet."
-            ],
-        }
-
-    openai_result = run_openai_reader(image_path)
-
-    parsed = openai_result.get("parsed_json") or {}
-    entries = parsed.get("entries", []) if isinstance(parsed, dict) else []
-    notes = parsed.get("notes", "") if isinstance(parsed, dict) else ""
-
-    return {
-        "source_image": local_result["source_image"],
-        "page_id": local_result["page_id"],
-        "processing_status": "done_openai",
-        "next_action": "continue_pipeline",
-        "engine": openai_result.get("engine", "openai"),
-        "model": openai_result.get("model", ""),
-        "entry_count": len(entries),
-        "entries": entries,
-        "ocr_text": local_result["ocr_text"],
-        "confidence": local_result["confidence"],
-        "meta": {
-            "local": local_result["meta"],
-            "openai_parse_error": openai_result.get("parse_error"),
-        },
-        "decision": local_result["decision"],
-        "openai": {
-            "raw_response": openai_result.get("raw_response", ""),
-            "parsed_json_available": openai_result.get("parsed_json") is not None,
-        },
         "notes": [
-            "Lokaler Reader war zu schwach.",
-            "Seite wurde deshalb an OpenAI gesendet.",
-            notes,
+            "Zentrale Reader-Ausgabe.",
+            "Lokaler OCR-Versuch wurde zuerst ausgeführt.",
+            "Schwache Seiten werden nur markiert, noch nicht automatisch an OpenAI gesendet."
         ],
     }
 
@@ -142,7 +77,7 @@ def main():
     if not image_path.exists():
         raise FileNotFoundError(f"Bilddatei nicht gefunden: {image_path}")
 
-    payload = build_payload(image_path)
+    payload = build_local_result(image_path)
     output_path = derive_output_path(image_path)
 
     with output_path.open("w", encoding="utf-8") as f:
@@ -155,10 +90,8 @@ def main():
     print(payload.get("processing_status"))
     print("Next action:")
     print(payload.get("next_action"))
-    print("Engine:")
-    print(payload.get("engine"))
-    print("Entry count:")
-    print(payload.get("entry_count", 0))
+    print("Confidence:")
+    print(payload.get("confidence", 0.0))
 
 
 if __name__ == "__main__":
