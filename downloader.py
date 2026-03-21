@@ -436,17 +436,6 @@ def cleanup_empty_dir(path: Path):
         log(f"Leerer Ordner konnte nicht entfernt werden {path}: {e}")
 
 
-def get_next_local_page_number(book_dir: Path) -> int:
-    highest = 0
-
-    for image_path in book_dir.glob("page_*.png"):
-        match = re.fullmatch(r"page_(\d{4})\.png", image_path.name)
-        if match:
-            highest = max(highest, int(match.group(1)))
-
-    return highest + 1
-
-
 def maybe_attach_to_existing_book(book_dir: Path, book_name: str, pdf_path: Path, meta: dict, source_url: str):
     existing_dir = find_existing_book_dir(meta=meta, source_url=source_url, exclude_dir=book_dir)
     if existing_dir is None:
@@ -916,6 +905,13 @@ def process_source_page(
     source_page_num: int,
     current_page_url: str,
 ) -> tuple[bool, str]:
+    final_page_path = book_dir / f"page_{local_page_num:04d}.png"
+    final_json_path = book_dir / f"page_{local_page_num:04d}.json"
+
+    if final_page_path.exists() and final_json_path.exists():
+        log(f"Seite {local_page_num:04d} existiert bereits, überspringe erneutes Speichern")
+        return True, "already_exists"
+
     page.goto(current_page_url)
     page.wait_for_timeout(3500)
     time.sleep(short_pause())
@@ -925,7 +921,6 @@ def process_source_page(
         return False, "service_unavailable_html"
 
     raw_page_path = debug_job_dir / f"raw_source_{source_page_num}.png"
-    final_page_path = book_dir / f"page_{local_page_num:04d}.png"
 
     save_viewer_screenshot(
         page=page,
@@ -982,8 +977,8 @@ def retry_failed_pages(
     remaining_failed = []
 
     for failed in failed_pages:
-        local_page_num = failed["local_page_number"]
         source_page_num = failed["source_page_number"]
+        local_page_num = source_page_num
         current_page_url = failed["source_url"]
 
         update_status(
@@ -1005,7 +1000,7 @@ def retry_failed_pages(
         for attempt in range(1, 4):
             log(
                 f"Nachladeversuch {attempt}/3 für "
-                f"lokale Seite {local_page_num:04d} "
+                f"Seite {local_page_num:04d} "
                 f"(Quelle {source_page_num})"
             )
 
@@ -1150,7 +1145,9 @@ def run_download_job(
                 end_page=requested_end_page,
             )
 
-            page.goto(url)
+            meta_url = make_page_url(url, 1)
+            log(f"Lade Metadaten immer von Seite 1: {meta_url}")
+            page.goto(meta_url)
             page.wait_for_timeout(2500)
 
             dom_candidates = extract_dom_text_candidates(page)
@@ -1247,20 +1244,36 @@ def run_download_job(
 
             log(f"Download beginnt ab Inhaltsseite {content_start_page}")
 
-            next_local_page_number = get_next_local_page_number(book_dir)
-            log(f"Nächste lokale Seitennummer im Zielordner: {next_local_page_number:04d}")
-
             saved_count = 0
             failed_pages = []
 
             for offset in range(total_pages_to_fetch):
-                local_page_num = next_local_page_number + offset
                 source_page_num = content_start_page + offset
+                local_page_num = source_page_num
 
                 if requested_end_page is not None and source_page_num > requested_end_page:
                     break
 
                 current_page_url = make_page_url(url, source_page_num)
+
+                final_page_path = book_dir / f"page_{local_page_num:04d}.png"
+                final_json_path = book_dir / f"page_{local_page_num:04d}.json"
+
+                if final_page_path.exists() and final_json_path.exists():
+                    log(f"Seite {local_page_num:04d} existiert bereits → überspringe")
+                    update_status(
+                        save_job_status=save_job_status,
+                        job_id=job_id,
+                        book_name=book_name,
+                        status="running",
+                        message=f"Seite {local_page_num:04d} existiert bereits und wurde übersprungen.",
+                        saved_count=saved_count,
+                        current_page=source_page_num,
+                        total_pages_target=total_pages_to_fetch,
+                        start_page=requested_start_page,
+                        end_page=requested_end_page,
+                    )
+                    continue
 
                 update_status(
                     save_job_status=save_job_status,
@@ -1288,12 +1301,17 @@ def run_download_job(
 
                 if success:
                     saved_count += 1
+                    if reason == "already_exists":
+                        message = f"Seite {local_page_num:04d} war bereits vorhanden."
+                    else:
+                        message = f"Seite {local_page_num:04d} gespeichert (Quelle {source_page_num})"
+
                     update_status(
                         save_job_status=save_job_status,
                         job_id=job_id,
                         book_name=book_name,
                         status="running",
-                        message=f"Seite {local_page_num:04d} gespeichert (Quelle {source_page_num})",
+                        message=message,
                         saved_count=saved_count,
                         current_page=source_page_num,
                         total_pages_target=total_pages_to_fetch,
