@@ -5,6 +5,26 @@ from dataclasses import dataclass, asdict, field
 from typing import Optional, List, Dict, Any
 
 
+MIN_OCR_CHAR_COUNT = 300
+MIN_RECORD_TYPE_CONFIDENCE = 0.60
+
+SERVICE_UNAVAILABLE_PATTERNS = [
+    "service unavailable",
+    "temporarily unable to service your request",
+    "please try again later",
+    "apache/2.4",
+]
+
+TITLE_PAGE_PATTERNS = [
+    "kontakt pfarre",
+    "buchtyp",
+    "datum von",
+    "datum bis",
+    "matricula online",
+    "signatur",
+]
+
+
 @dataclass
 class PageMetadata:
     schema_version: int
@@ -34,7 +54,7 @@ def normalize_ocr_text(text: str) -> str:
     return text.strip()
 
 
-def detect_record_type(text: str) -> (Optional[str], float):
+def detect_record_type(text: str) -> tuple[Optional[str], float]:
     lower = text.lower()
 
     scores = {
@@ -82,6 +102,11 @@ def extract_candidate_names(text: str, limit: int = 30) -> List[str]:
         "Kirchenbuch Taufe",
         "Kirchenbuch Trauung",
         "Kirchenbuch Tod",
+        "Kontakt Pfarre",
+        "Ort Signatur",
+        "Buchtyp Kirchenbuch",
+        "Datum Von",
+        "Datum Bis",
     }
 
     result = []
@@ -100,6 +125,52 @@ def extract_candidate_names(text: str, limit: int = 30) -> List[str]:
     return result[:limit]
 
 
+def contains_service_unavailable_text(text: str) -> bool:
+    lower = text.lower()
+    return any(pattern in lower for pattern in SERVICE_UNAVAILABLE_PATTERNS)
+
+
+def looks_like_title_page(text: str) -> bool:
+    lower = text.lower()
+    hits = sum(1 for pattern in TITLE_PAGE_PATTERNS if pattern in lower)
+    return hits >= 2
+
+
+def determine_needs_ai_review(
+    normalized_text: str,
+    record_type: Optional[str],
+    record_confidence: float,
+    years: List[int],
+    candidate_names: List[str],
+) -> tuple[bool, List[str]]:
+    review_reasons: List[str] = []
+
+    if not normalized_text:
+        review_reasons.append("Kein OCR-Text vorhanden.")
+
+    if contains_service_unavailable_text(normalized_text):
+        review_reasons.append("Server-Fehlertext im OCR erkannt.")
+
+    if len(normalized_text) < MIN_OCR_CHAR_COUNT:
+        review_reasons.append(f"OCR-Text zu kurz (< {MIN_OCR_CHAR_COUNT} Zeichen).")
+
+    if looks_like_title_page(normalized_text):
+        review_reasons.append("Titel-/Indexseite erkannt.")
+
+    if not record_type:
+        review_reasons.append("Seitentyp konnte nicht erkannt werden.")
+    elif record_confidence < MIN_RECORD_TYPE_CONFIDENCE:
+        review_reasons.append(
+            f"Seitentyp unsicher erkannt (Confidence < {MIN_RECORD_TYPE_CONFIDENCE:.2f})."
+        )
+
+    if not years and not candidate_names:
+        review_reasons.append("Weder Jahreszahlen noch Namenskandidaten erkannt.")
+
+    needs_review = len(review_reasons) > 0
+    return needs_review, review_reasons
+
+
 def build_page_metadata(
     page_number: int,
     image_file: str,
@@ -112,16 +183,26 @@ def build_page_metadata(
     years = extract_years(normalized)
     candidate_names = extract_candidate_names(normalized)
 
-    notes: List[str] = []
+    needs_ai_review, review_reasons = determine_needs_ai_review(
+        normalized_text=normalized,
+        record_type=record_type,
+        record_confidence=record_confidence,
+        years=years,
+        candidate_names=candidate_names,
+    )
 
-    if not normalized:
-        notes.append("Kein OCR-Text vorhanden.")
-    if not record_type:
-        notes.append("Seitentyp konnte nicht erkannt werden.")
+    notes: List[str] = list(review_reasons)
+
     if not years:
         notes.append("Keine Jahreszahl erkannt.")
     if not candidate_names:
         notes.append("Keine Namenskandidaten erkannt.")
+
+    # Doppelte Notizen entfernen, Reihenfolge behalten
+    unique_notes: List[str] = []
+    for note in notes:
+        if note not in unique_notes:
+            unique_notes.append(note)
 
     return PageMetadata(
         schema_version=1,
@@ -137,8 +218,8 @@ def build_page_metadata(
         earliest_year=years[0] if years else None,
         latest_year=years[-1] if years else None,
         candidate_names=candidate_names,
-        needs_ai_review=True,
-        notes=notes,
+        needs_ai_review=needs_ai_review,
+        notes=unique_notes,
     )
 
 
