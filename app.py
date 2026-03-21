@@ -512,7 +512,14 @@ def start_download():
     save_job_status(job_id, status)
 
     def worker():
-        run_download_job(job_id, url, internal_book_name, save_job_status)
+        run_download_job(
+            job_id=job_id,
+            url=url,
+            book_name=internal_book_name,
+            save_job_status=save_job_status,
+            start_page=start_page,
+            end_page=end_page,
+        )
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
