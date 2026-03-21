@@ -38,6 +38,7 @@ DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 DEBUG_PAGE_COUNT = 15
 SMART_SKIP_LIMIT = 8
+MAX_BOOK_FOLDER_NAME_LENGTH = 120
 
 SERVICE_UNAVAILABLE_PATTERNS = [
     "service unavailable",
@@ -123,6 +124,20 @@ def sanitize(text: str) -> str:
     text = re.sub(r"\s+", "_", text)
     text = re.sub(r"[^\w\-]", "", text)
     return text.strip("_")
+
+
+def sanitize_folder_part(text: str, max_len: int = 40) -> str:
+    cleaned = sanitize(text)
+    if not cleaned:
+        return ""
+    return cleaned[:max_len].strip("_")
+
+
+def truncate_folder_name(name: str, max_len: int = MAX_BOOK_FOLDER_NAME_LENGTH) -> str:
+    cleaned = sanitize(name)
+    if len(cleaned) <= max_len:
+        return cleaned
+    return cleaned[:max_len].rstrip("_-")
 
 
 def prettify_slug(text: str) -> str:
@@ -330,43 +345,51 @@ def enrich_meta_from_dom(meta: dict, dom_candidates: dict) -> dict:
     return meta
 
 
+def extract_field_from_title_text(text: str, field_name: str) -> str | None:
+    if not text:
+        return None
+
+    pattern = rf"{re.escape(field_name)}\s+([^|]+)"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if not match:
+        return None
+
+    value = normalize_whitespace(match.group(1))
+    if not value:
+        return None
+
+    if re.search(r"\b0\d-[A-Za-zÄÖÜäöü]+-\d{4}\b", value):
+        return None
+
+    value = re.split(r"\b0\d-[A-Za-zÄÖÜäöü]+-\d{4}\b", value)[0].strip()
+    value = re.split(r"\bKontakt\b", value, flags=re.IGNORECASE)[0].strip()
+    value = re.split(r"\bMatricula\b", value, flags=re.IGNORECASE)[0].strip()
+
+    return normalize_whitespace(value) or None
+
+
 def improve_book_meta_from_title(meta: dict) -> dict:
     text = meta.get("dom_title_text", "") or ""
-    page_title = normalize_whitespace(text)
 
-    match_place = re.search(r"Pfarre/Ort\s+([^|]+)", page_title, re.IGNORECASE)
-    if match_place:
-        place_value = normalize_whitespace(match_place.group(1))
-        if place_value:
-            meta["pfarre_ort"] = place_value
+    place_value = extract_field_from_title_text(text, "Pfarre/Ort")
+    if place_value:
+        meta["pfarre_ort"] = place_value
 
-    match_type = re.search(r"Buchtyp\s+([^|]+)", page_title, re.IGNORECASE)
-    if match_type:
-        type_value = normalize_whitespace(match_type.group(1))
-        if type_value:
-            meta["buchtyp"] = type_value
+    type_value = extract_field_from_title_text(text, "Buchtyp")
+    if type_value:
+        meta["buchtyp"] = type_value
 
-    match_from = re.search(r"Datum von\s+.*?(\d{4})", page_title, re.IGNORECASE)
-    match_to = re.search(r"Datum bis\s+.*?(\d{4})", page_title, re.IGNORECASE)
+    signatur_value = extract_field_from_title_text(text, "Signatur")
+    if signatur_value:
+        meta["signatur"] = signatur_value
+
+    match_from = re.search(r"Datum von\s+.*?(\d{4})", text, re.IGNORECASE)
+    match_to = re.search(r"Datum bis\s+.*?(\d{4})", text, re.IGNORECASE)
 
     if match_from:
         meta["datum_von"] = match_from.group(1)
     if match_to:
         meta["datum_bis"] = match_to.group(1)
-
-    if normalize_compare_value(meta.get("pfarre_ort")) in {"de_ful3_jdw", "unbekannt"}:
-        alt_place = re.search(r"\|\s*([^|]+)\s*\|\s*fulda,\s*r\.k\.\s*bistum", page_title, re.IGNORECASE)
-        if alt_place:
-            alt_place_value = normalize_whitespace(alt_place.group(1))
-            if alt_place_value:
-                meta["pfarre_ort"] = alt_place_value
-
-    if normalize_compare_value(meta.get("bistum")) in {"fulda", "unbekannt"}:
-        match_bistum = re.search(r"\|\s*([^|]+bistum)\s*\|", page_title, re.IGNORECASE)
-        if match_bistum:
-            bistum_value = normalize_whitespace(match_bistum.group(1))
-            if bistum_value:
-                meta["bistum"] = bistum_value
 
     log(f"Verbesserte Metadaten aus Titelseite: {meta}")
     return meta
@@ -495,19 +518,29 @@ def maybe_attach_to_existing_book(book_dir: Path, book_name: str, pdf_path: Path
     return existing_dir, existing_name, existing_pdf_path, True
 
 
-def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: dict):
-    log(f"Rename-Prüfung: aktueller book_name={book_name}")
-
-    new_name_parts = [
-        sanitize(meta.get("pfarre_ort") or "unbekannt"),
-        sanitize(meta.get("signatur") or "unbekannt"),
-        sanitize(meta.get("buchtyp") or "Kirchenbuch"),
+def build_display_name_from_meta(meta: dict) -> str:
+    parts = [
+        sanitize_folder_part(meta.get("pfarre_ort") or "unbekannt", max_len=40),
+        sanitize_folder_part(meta.get("signatur") or "unbekannt", max_len=20),
+        sanitize_folder_part(meta.get("buchtyp") or "Kirchenbuch", max_len=40),
     ]
 
     if meta.get("datum_von") or meta.get("datum_bis"):
-        new_name_parts.append(f"{meta.get('datum_von') or 'xxxx'}_{meta.get('datum_bis') or 'xxxx'}")
+        parts.append(
+            sanitize_folder_part(
+                f"{meta.get('datum_von') or 'xxxx'}_{meta.get('datum_bis') or 'xxxx'}",
+                max_len=25,
+            )
+        )
 
-    display_name = "_".join([part for part in new_name_parts if part])
+    name = "_".join([part for part in parts if part])
+    return truncate_folder_name(name)
+
+
+def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: dict):
+    log(f"Rename-Prüfung: aktueller book_name={book_name}")
+
+    display_name = build_display_name_from_meta(meta)
 
     if not display_name or "None" in display_name:
         log("Neuer Name ungültig, daher kein Rename")
@@ -515,7 +548,7 @@ def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: 
 
     if not should_auto_rename(book_name):
         log("Kein Auto-Rename, da Buchname kein technischer Platzhalter ist")
-        return book_dir, book_name, pdf_path, False, book_name
+        return book_dir, book_name, pdf_path, False, display_name
 
     target_dir = make_unique_target_dir(display_name)
     final_fs_name = target_dir.name
