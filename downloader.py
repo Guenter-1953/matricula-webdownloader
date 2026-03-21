@@ -40,6 +40,11 @@ DEBUG_PAGE_COUNT = 15
 SMART_SKIP_LIMIT = 8
 MAX_BOOK_FOLDER_NAME_LENGTH = 120
 
+SAFE_MIN_PAUSE_SECONDS = 12.0
+SAFE_MAX_PAUSE_SECONDS = 18.0
+SAFE_SHORT_MIN_SECONDS = 1.2
+SAFE_SHORT_MAX_SECONDS = 3.5
+
 SERVICE_UNAVAILABLE_PATTERNS = [
     "service unavailable",
     "temporarily unable to service your request",
@@ -52,12 +57,60 @@ def log(msg: str):
     print(f"[DEBUG] {msg}")
 
 
+class PauseController:
+    """
+    Steuert adaptive, aber immer sichere Wartezeiten.
+
+    Grundidee:
+    - normaler Bereich: 12–18 Sekunden
+    - bei Fehlern/Störungen: langsamer
+    - nach mehreren stabilen Seiten wieder zurück Richtung Normalwert
+    """
+
+    def __init__(self):
+        self.penalty_level = 0
+        self.success_streak = 0
+
+    def register_success(self):
+        self.success_streak += 1
+        if self.success_streak >= 3 and self.penalty_level > 0:
+            self.penalty_level -= 1
+            self.success_streak = 0
+            log(f"PauseController: penalty_level gesenkt auf {self.penalty_level}")
+
+    def register_problem(self):
+        self.success_streak = 0
+        if self.penalty_level < 4:
+            self.penalty_level += 1
+        log(f"PauseController: penalty_level erhöht auf {self.penalty_level}")
+
+    def human_pause(self) -> float:
+        min_pause = SAFE_MIN_PAUSE_SECONDS + (self.penalty_level * 2.0)
+        max_pause = SAFE_MAX_PAUSE_SECONDS + (self.penalty_level * 3.0)
+        return round(random.uniform(min_pause, max_pause), 2)
+
+    def short_pause(self) -> float:
+        min_pause = SAFE_SHORT_MIN_SECONDS + (self.penalty_level * 0.4)
+        max_pause = SAFE_SHORT_MAX_SECONDS + (self.penalty_level * 0.8)
+        return round(random.uniform(min_pause, max_pause), 2)
+
+    def nav_timeout_ms(self) -> int:
+        return 2500 + (self.penalty_level * 1000)
+
+
+PAUSE_CONTROLLER = PauseController()
+
+
 def human_pause() -> float:
-    return round(random.uniform(1.2, 2.8), 2)
+    return PAUSE_CONTROLLER.human_pause()
 
 
 def short_pause() -> float:
-    return round(random.uniform(0.3, 0.9), 2)
+    return PAUSE_CONTROLLER.short_pause()
+
+
+def nav_timeout_ms() -> int:
+    return PAUSE_CONTROLLER.nav_timeout_ms()
 
 
 def write_text_file(path: Path, text: str):
@@ -744,7 +797,7 @@ def center_viewer_canvas(page):
             return
 
         page.mouse.click(result["x"], result["y"])
-        page.wait_for_timeout(200)
+        page.wait_for_timeout(400)
 
         start_x = result["x"]
         start_y = result["y"]
@@ -752,9 +805,9 @@ def center_viewer_canvas(page):
 
         page.mouse.move(start_x, start_y)
         page.mouse.down()
-        page.mouse.move(end_x, start_y, steps=8)
+        page.mouse.move(end_x, start_y, steps=10)
         page.mouse.up()
-        page.wait_for_timeout(300)
+        page.wait_for_timeout(600)
 
     except Exception as e:
         log(f"Viewer-Zentrierung fehlgeschlagen: {e}")
@@ -974,10 +1027,11 @@ def find_first_content_page(page, base_url: str, start_page: int, debug_job_dir:
 
         log(f"Prüfe mögliche Startseite {probe_page}: {current_page_url}")
         page.goto(current_page_url, wait_until="domcontentloaded")
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(nav_timeout_ms())
         time.sleep(short_pause())
 
         if page_shows_service_unavailable(page):
+            PAUSE_CONTROLLER.register_problem()
             log(f"Service-Unavailable bei Startseitenprüfung {probe_page}, überspringe Probe")
             continue
 
@@ -996,9 +1050,11 @@ def find_first_content_page(page, base_url: str, start_page: int, debug_job_dir:
         save_json(debug_job_dir / f"probe_page_{probe_page}.analysis.json", analysis)
 
         if analysis["is_content"]:
+            PAUSE_CONTROLLER.register_success()
             log(f"Erste Inhaltsseite gefunden: {probe_page}")
             return probe_page
 
+        PAUSE_CONTROLLER.register_success()
         log(f"Seite {probe_page} übersprungen: {analysis['reason']}")
 
     log(f"Keine eindeutige Inhaltsseite gefunden, verwende Startseite {start_page}")
@@ -1021,10 +1077,11 @@ def process_source_page(
         return True, "already_exists"
 
     page.goto(current_page_url, wait_until="domcontentloaded")
-    page.wait_for_timeout(1200)
+    page.wait_for_timeout(nav_timeout_ms())
     time.sleep(short_pause())
 
     if page_shows_service_unavailable(page):
+        PAUSE_CONTROLLER.register_problem()
         log(f"Service-Unavailable im HTML erkannt bei Quellseite {source_page_num}")
         return False, "service_unavailable_html"
 
@@ -1041,6 +1098,7 @@ def process_source_page(
     page_ocr_text, page_ocr_error = read_page_ocr_debug(raw_page_path)
 
     if contains_service_unavailable_text(page_ocr_text):
+        PAUSE_CONTROLLER.register_problem()
         log(f"Service-Unavailable im OCR erkannt bei Quellseite {source_page_num}")
         try:
             if final_page_path.exists():
@@ -1066,6 +1124,7 @@ def process_source_page(
         ocr_text=page_ocr_text,
     )
 
+    PAUSE_CONTROLLER.register_success()
     return True, "ok"
 
 
@@ -1138,7 +1197,8 @@ def retry_failed_pages(
                 break
 
             log(f"Nachladeversuch fehlgeschlagen: {reason}")
-            time.sleep(2 + attempt * 2)
+            PAUSE_CONTROLLER.register_problem()
+            time.sleep(human_pause())
 
         if not success:
             failed_copy = dict(failed)
@@ -1256,7 +1316,8 @@ def run_download_job(
             meta_url = make_page_url(url, 1)
             log(f"Lade Metadaten immer von Seite 1: {meta_url}")
             page.goto(meta_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(1200)
+            page.wait_for_timeout(nav_timeout_ms())
+            time.sleep(short_pause())
 
             dom_candidates = extract_dom_text_candidates(page)
             write_text_file(
