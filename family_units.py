@@ -1,8 +1,9 @@
 import json
 import os
+import re
 import sys
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def load_json(path: str) -> Dict[str, Any]:
@@ -32,31 +33,80 @@ def safe_list(value: Any) -> List[Any]:
     return [value]
 
 
-def extract_flags(person_data: Dict[str, Any], role: str, entry_details: Dict[str, Any]) -> List[str]:
+def normalize_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def split_name(raw_name: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    raw_name = safe_str(raw_name)
+    if not raw_name:
+        return None, None, None
+
+    cleaned = normalize_whitespace(raw_name)
+
+    cleaned = re.sub(r"\(.*?\)", "", cleaned).strip()
+    cleaned = normalize_whitespace(cleaned)
+
+    if not cleaned:
+        return raw_name, None, None
+
+    parts = cleaned.split(" ")
+
+    if len(parts) == 1:
+        return cleaned, cleaned, None
+
+    surname = parts[0]
+    given_name = " ".join(parts[1:])
+
+    full_name = f"{given_name} {surname}".strip()
+
+    return full_name, given_name, surname
+
+
+def infer_status_from_text(text: str, role: str) -> Optional[str]:
+    t = text.lower()
+
+    if "viduus" in t or "witwer" in t:
+        return "witwer"
+    if "vidua" in t or "witwe" in t:
+        return "witwe"
+    if "virgo" in t or "ledig" in t:
+        return "ledig"
+    if "adolescens" in t:
+        if role == "groom":
+            return "ledig"
+    return None
+
+
+def infer_residence_from_text(text: str) -> Optional[str]:
+    patterns = [
+        r"wohnhaft in ([A-ZÄÖÜa-zäöüß\-\s]+)",
+        r"aus ([A-ZÄÖÜa-zäöüß\-\s]+)",
+        r"herkunft ([A-ZÄÖÜa-zäöüß\-\s]+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            value = normalize_whitespace(match.group(1))
+            value = re.split(r"[;,\.]", value)[0].strip()
+            return value or None
+
+    return None
+
+
+def infer_flags_from_text(text: str, role: str) -> List[str]:
     flags: List[str] = []
+    t = text.lower()
 
-    status = safe_str(person_data.get("status"))
-    notes_text = " ".join([str(x) for x in safe_list(person_data.get("notes")) if x is not None]).lower()
-
-    if status:
-        status_lower = status.lower()
-        if role == "groom" and "witwer" in status_lower:
-            flags.append("widower")
-        if role == "bride" and "witwe" in status_lower:
-            flags.append("widow")
-
-    if "witwer" in notes_text and "widower" not in flags:
+    if "viduus" in t or "witwer" in t:
         flags.append("widower")
-    if "witwe" in notes_text and "widow" not in flags:
+    if "vidua" in t or "witwe" in t:
         flags.append("widow")
-    if "unehelich" in notes_text:
+    if "unehelich" in t:
         flags.append("illegitimate")
-
-    details_text = json.dumps(entry_details, ensure_ascii=False).lower() if entry_details else ""
-    if "dispens" in details_text or "dispensation" in details_text:
+    if "dispens" in t or "dispensation" in t:
         flags.append("dispensation")
-    if "unehelich" in details_text and "illegitimate" not in flags:
-        flags.append("illegitimate")
 
     unique_flags: List[str] = []
     for flag in flags:
@@ -66,10 +116,66 @@ def extract_flags(person_data: Dict[str, Any], role: str, entry_details: Dict[st
     return unique_flags
 
 
+def extract_flags(person_data: Dict[str, Any], role: str, entry_details: Dict[str, Any], entry_notes: List[Any]) -> List[str]:
+    flags: List[str] = []
+
+    status = safe_str(person_data.get("status"))
+    person_notes_text = " ".join([str(x) for x in safe_list(person_data.get("notes")) if x is not None]).lower()
+    person_details_text = safe_str(person_data.get("details")) or ""
+    entry_details_text = json.dumps(entry_details, ensure_ascii=False).lower() if entry_details else ""
+    entry_notes_text = " ".join([str(x) for x in entry_notes if x is not None]).lower()
+
+    if status:
+        status_lower = status.lower()
+        if role == "groom" and "witwer" in status_lower:
+            flags.append("widower")
+        if role == "bride" and "witwe" in status_lower:
+            flags.append("widow")
+        if "ledig" in status_lower and role == "bride":
+            pass
+
+    for source_text in [person_notes_text, person_details_text.lower(), entry_details_text, entry_notes_text]:
+        for flag in infer_flags_from_text(source_text, role):
+            if flag not in flags:
+                flags.append(flag)
+
+    return flags
+
+
 def build_full_name(given_name: Optional[str], surname: Optional[str]) -> Optional[str]:
     parts = [given_name, surname]
     combined = " ".join([p for p in parts if p])
     return combined if combined else None
+
+
+def build_person_name_fields(person_data: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    given_name = safe_str(person_data.get("given_name"))
+    surname = safe_str(person_data.get("surname"))
+    full_name = safe_str(person_data.get("full_name"))
+    name_original = safe_str(person_data.get("name_original"))
+
+    raw_name = safe_str(person_data.get("name"))
+
+    if not full_name and (given_name or surname):
+        full_name = build_full_name(given_name, surname)
+
+    if not full_name and raw_name:
+        guessed_full_name, guessed_given_name, guessed_surname = split_name(raw_name)
+        full_name = guessed_full_name
+        if not given_name:
+            given_name = guessed_given_name
+        if not surname:
+            surname = guessed_surname
+
+    if not name_original and raw_name:
+        name_original = raw_name
+
+    return {
+        "full_name": full_name,
+        "given_name": given_name,
+        "surname": surname,
+        "name_original": name_original,
+    }
 
 
 def make_person(
@@ -77,26 +183,28 @@ def make_person(
     person_data: Optional[Dict[str, Any]],
     unit_id: str,
     entry_details: Optional[Dict[str, Any]] = None,
+    entry_notes: Optional[List[Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not isinstance(person_data, dict):
         return None
 
     person_id = f"{unit_id}_person_{role}"
+    entry_details = entry_details or {}
+    entry_notes = entry_notes or []
 
-    given_name = safe_str(person_data.get("given_name"))
-    surname = safe_str(person_data.get("surname"))
-    full_name = safe_str(person_data.get("full_name"))
-    name_original = safe_str(person_data.get("name_original"))
+    name_fields = build_person_name_fields(person_data)
 
-    if not full_name:
-        full_name = build_full_name(given_name, surname)
+    person_details_text = safe_str(person_data.get("details")) or ""
+    inferred_status = infer_status_from_text(person_details_text, role)
+    inferred_residence = infer_residence_from_text(person_details_text)
 
     attributes = {
         "age": safe_str(person_data.get("age")),
-        "status": safe_str(person_data.get("status")),
+        "status": safe_str(person_data.get("status")) or inferred_status,
         "occupation": safe_str(person_data.get("occupation")),
-        "residence": safe_str(person_data.get("residence")),
+        "residence": safe_str(person_data.get("residence")) or inferred_residence,
         "birth_place": safe_str(person_data.get("birth_place")),
+        "details_text": person_details_text or None,
     }
 
     clean_attributes = {}
@@ -107,13 +215,13 @@ def make_person(
     person = {
         "person_id": person_id,
         "role": role,
-        "full_name": full_name,
-        "given_name": given_name,
-        "surname": surname,
-        "name_original": name_original,
+        "full_name": name_fields["full_name"],
+        "given_name": name_fields["given_name"],
+        "surname": name_fields["surname"],
+        "name_original": name_fields["name_original"],
         "sex": safe_str(person_data.get("sex")),
         "attributes": clean_attributes,
-        "flags": extract_flags(person_data, role, entry_details or {}),
+        "flags": extract_flags(person_data, role, entry_details, entry_notes),
         "raw": person_data,
     }
 
@@ -123,12 +231,13 @@ def make_person(
 def extract_persons_from_marriage_entry(entry: Dict[str, Any], unit_id: str) -> List[Dict[str, Any]]:
     persons: List[Dict[str, Any]] = []
     entry_details = entry.get("details", {}) if isinstance(entry.get("details"), dict) else {}
+    entry_notes = safe_list(entry.get("notes"))
 
     groom_data = entry.get("groom") if isinstance(entry.get("groom"), dict) else {}
     bride_data = entry.get("bride") if isinstance(entry.get("bride"), dict) else {}
 
-    groom = make_person("groom", groom_data, unit_id, entry_details)
-    bride = make_person("bride", bride_data, unit_id, entry_details)
+    groom = make_person("groom", groom_data, unit_id, entry_details, entry_notes)
+    bride = make_person("bride", bride_data, unit_id, entry_details, entry_notes)
 
     if groom:
         if not groom.get("sex"):
@@ -140,10 +249,10 @@ def extract_persons_from_marriage_entry(entry: Dict[str, Any], unit_id: str) -> 
             bride["sex"] = "F"
         persons.append(bride)
 
-    groom_father = make_person("groom_father", groom_data.get("father"), unit_id, entry_details)
-    groom_mother = make_person("groom_mother", groom_data.get("mother"), unit_id, entry_details)
-    bride_father = make_person("bride_father", bride_data.get("father"), unit_id, entry_details)
-    bride_mother = make_person("bride_mother", bride_data.get("mother"), unit_id, entry_details)
+    groom_father = make_person("groom_father", groom_data.get("father"), unit_id, entry_details, entry_notes)
+    groom_mother = make_person("groom_mother", groom_data.get("mother"), unit_id, entry_details, entry_notes)
+    bride_father = make_person("bride_father", bride_data.get("father"), unit_id, entry_details, entry_notes)
+    bride_mother = make_person("bride_mother", bride_data.get("mother"), unit_id, entry_details, entry_notes)
 
     if groom_father:
         if not groom_father.get("sex"):
