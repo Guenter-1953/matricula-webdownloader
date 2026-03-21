@@ -3,7 +3,7 @@ import os
 import re
 import sys
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 def load_json(path: str) -> Dict[str, Any]:
@@ -47,26 +47,6 @@ def clean_name_text(raw_name: Optional[str]) -> Optional[str]:
     cleaned = normalize_whitespace(cleaned)
 
     return cleaned or None
-
-
-def split_name(raw_name: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    cleaned = clean_name_text(raw_name)
-    if not cleaned:
-        return None, None, None
-
-    parts = cleaned.split(" ")
-
-    if len(parts) == 1:
-        return cleaned, cleaned, None
-
-    if len(parts) == 2:
-        surname = parts[0]
-        given_name = parts[1]
-        full_name = f"{given_name} {surname}".strip()
-        return full_name, given_name, surname
-
-    # Ab 3 Wörtern lieber konservativ bleiben als falsch zerlegen
-    return cleaned, None, None
 
 
 def infer_status_from_text(text: str, role: str) -> Optional[str]:
@@ -165,12 +145,7 @@ def build_person_name_fields(person_data: Dict[str, Any]) -> Dict[str, Optional[
         full_name = build_full_name(given_name, surname)
 
     if not full_name and cleaned_raw_name:
-        guessed_full_name, guessed_given_name, guessed_surname = split_name(cleaned_raw_name)
-        full_name = guessed_full_name
-        if not given_name:
-            given_name = guessed_given_name
-        if not surname:
-            surname = guessed_surname
+        full_name = cleaned_raw_name
 
     if not name_original and raw_name:
         name_original = raw_name
