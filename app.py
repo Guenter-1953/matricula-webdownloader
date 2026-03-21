@@ -35,6 +35,45 @@ def parse_iso(value):
         return None
 
 
+def parse_positive_int(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    try:
+        number = int(text)
+    except Exception:
+        return None
+
+    if number < 1:
+        return None
+
+    return number
+
+
+def normalize_page_range(start_page, end_page):
+    start_value = parse_positive_int(start_page)
+    end_value = parse_positive_int(end_page)
+
+    if start_value is not None and end_value is not None and end_value < start_value:
+        start_value, end_value = end_value, start_value
+
+    return start_value, end_value
+
+
+def calculate_total_pages_target(start_page, end_page, default_value=15):
+    if start_page is not None and end_page is not None:
+        return max((end_page - start_page + 1), 1)
+
+    if start_page is not None and end_page is None:
+        return default_value
+
+    if start_page is None and end_page is not None:
+        return end_page
+
+    return default_value
+
+
 def format_seconds_hms(seconds):
     if seconds is None:
         return None
@@ -261,6 +300,8 @@ def save_job_status(job_id, status):
     payload["message"] = payload.get("message", "")
     payload["phase"] = infer_phase(payload)
     payload["total_pages_target"] = payload.get("total_pages_target", existing.get("total_pages_target", 15))
+    payload["start_page"] = payload.get("start_page", existing.get("start_page"))
+    payload["end_page"] = payload.get("end_page", existing.get("end_page"))
 
     if normalized_status in ("fertig", "fehler", "abgebrochen"):
         payload["finished_at"] = existing.get("finished_at") or incoming.get("finished_at") or now_iso()
@@ -440,6 +481,12 @@ def start_download():
     job_id = str(uuid.uuid4())[:8]
     manual_book_name = request.form.get("book_name", "").strip()
 
+    start_page, end_page = normalize_page_range(
+        request.form.get("start_page"),
+        request.form.get("end_page"),
+    )
+    total_pages_target = calculate_total_pages_target(start_page, end_page, default_value=15)
+
     internal_book_name = manual_book_name or f"book_{job_id}"
     display_book_name = manual_book_name or "Automatisch ermitteln..."
 
@@ -458,7 +505,9 @@ def start_download():
         "saved_count": 0,
         "current_page": None,
         "phase": "gestartet",
-        "total_pages_target": 15,
+        "total_pages_target": total_pages_target,
+        "start_page": start_page,
+        "end_page": end_page,
     }
     save_job_status(job_id, status)
 
