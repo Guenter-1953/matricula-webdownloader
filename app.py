@@ -126,11 +126,16 @@ def status_css_class(status: str) -> str:
 
 
 def infer_phase(payload: dict) -> str:
-    if payload.get("phase"):
-        return str(payload["phase"])
+    status = normalize_status_label(payload.get("status", ""))
+
+    if status == "fertig":
+        return "fertig"
+    if status == "fehler":
+        return "fehler"
+    if status == "abgebrochen":
+        return "abgebrochen"
 
     message = str(payload.get("message", "")).lower()
-    status = normalize_status_label(payload.get("status", ""))
 
     if "pdf" in message:
         return "pdf"
@@ -142,14 +147,13 @@ def infer_phase(payload: dict) -> str:
         return "startseite"
     if "lade quellseite" in message or "gespeichert" in message:
         return "download"
-    if status == "fertig":
-        return "fertig"
-    if status == "fehler":
-        return "fehler"
-    if status == "abgebrochen":
-        return "abgebrochen"
     if status == "gestartet":
         return "gestartet"
+
+    existing_phase = str(payload.get("phase") or "").strip()
+    if existing_phase:
+        return existing_phase
+
     return "läuft"
 
 
@@ -200,6 +204,10 @@ def enrich_job_metrics(job: dict) -> dict:
 
     job["created_at"] = started_at
     job["started_at"] = started_at
+
+    if status in ("fertig", "fehler", "abgebrochen") and not finished_at:
+        finished_at = job.get("updated_at") or now_iso()
+
     if finished_at:
         job["finished_at"] = finished_at
 
@@ -207,7 +215,17 @@ def enrich_job_metrics(job: dict) -> dict:
     finished_dt = parse_iso(finished_at)
 
     runtime_seconds = None
-    if started_dt is not None:
+
+    stored_runtime_seconds = job.get("runtime_seconds")
+    try:
+        if stored_runtime_seconds is not None:
+            stored_runtime_seconds = int(stored_runtime_seconds)
+    except Exception:
+        stored_runtime_seconds = None
+
+    if status in ("fertig", "fehler", "abgebrochen") and stored_runtime_seconds is not None:
+        runtime_seconds = max(0, stored_runtime_seconds)
+    elif started_dt is not None:
         if status in ("fertig", "fehler", "abgebrochen") and finished_dt is not None:
             runtime_seconds = max(0, int((finished_dt - started_dt).total_seconds()))
         else:
@@ -291,10 +309,17 @@ def save_job_status(job_id, status):
     payload["status"] = normalized_status
     payload["status_class"] = status_css_class(normalized_status)
 
-    original_started_at = existing.get("started_at") or existing.get("created_at") or incoming.get("started_at") or incoming.get("created_at") or now_iso()
+    original_started_at = (
+        existing.get("started_at")
+        or existing.get("created_at")
+        or incoming.get("started_at")
+        or incoming.get("created_at")
+        or now_iso()
+    )
 
     payload["created_at"] = original_started_at
     payload["started_at"] = original_started_at
+    payload["updated_at"] = now_iso()
     payload["pages"] = payload.get("pages", payload.get("saved_count", 0))
     payload["saved_count"] = payload.get("saved_count", payload.get("pages", 0))
     payload["message"] = payload.get("message", "")
@@ -304,7 +329,7 @@ def save_job_status(job_id, status):
     payload["end_page"] = payload.get("end_page", existing.get("end_page"))
 
     if normalized_status in ("fertig", "fehler", "abgebrochen"):
-        payload["finished_at"] = existing.get("finished_at") or incoming.get("finished_at") or now_iso()
+        payload["finished_at"] = existing.get("finished_at") or incoming.get("finished_at") or payload["updated_at"]
 
     payload = enrich_job_metrics(payload)
 
