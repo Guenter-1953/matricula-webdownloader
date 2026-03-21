@@ -8,7 +8,7 @@ from downloader import run_download_job
 
 app = Flask(__name__)
 
-APP_DISPLAY_VERSION = "v1.1.1"
+APP_DISPLAY_VERSION = "v1.1.2"
 BUILD_DATE = "2026-03-21"
 
 DATA_DIR = Path("/app/data")
@@ -154,19 +154,25 @@ def enrich_job_metrics(job: dict) -> dict:
     job["saved_count"] = saved_count
 
     started_at = job.get("started_at") or job.get("created_at")
+    finished_at = job.get("finished_at")
+
+    if not started_at:
+        started_at = now_iso()
+
+    job["created_at"] = started_at
     job["started_at"] = started_at
-    job["created_at"] = job.get("created_at", started_at or now_iso())
+    if finished_at:
+        job["finished_at"] = finished_at
 
     started_dt = parse_iso(started_at)
+    finished_dt = parse_iso(finished_at)
+
     runtime_seconds = None
-
     if started_dt is not None:
-        runtime_seconds = max(0, int((datetime.now() - started_dt).total_seconds()))
-
-    if status in ("fertig", "fehler", "abgebrochen"):
-        finished_dt = parse_iso(job.get("finished_at"))
-        if started_dt is not None and finished_dt is not None:
+        if status in ("fertig", "fehler", "abgebrochen") and finished_dt is not None:
             runtime_seconds = max(0, int((finished_dt - started_dt).total_seconds()))
+        else:
+            runtime_seconds = max(0, int((datetime.now() - started_dt).total_seconds()))
 
     job["runtime_seconds"] = runtime_seconds
     job["runtime_text"] = format_seconds_hms(runtime_seconds)
@@ -201,6 +207,9 @@ def enrich_job_metrics(job: dict) -> dict:
     job["estimated_remaining_seconds"] = estimated_remaining_seconds
     job["estimated_remaining_text"] = format_seconds_hms(estimated_remaining_seconds)
 
+    if status in ("fertig", "fehler", "abgebrochen"):
+        job["current_page"] = None
+
     return job
 
 
@@ -233,8 +242,9 @@ def save_job_status(job_id, status):
         except Exception:
             existing = {}
 
+    incoming = dict(status or {})
     payload = dict(existing)
-    payload.update(dict(status or {}))
+    payload.update(incoming)
 
     payload["job_id"] = payload.get("job_id", job_id)
 
@@ -242,10 +252,9 @@ def save_job_status(job_id, status):
     payload["status"] = normalized_status
     payload["status_class"] = status_css_class(normalized_status)
 
-    original_created_at = existing.get("created_at") or payload.get("created_at") or now_iso()
-    original_started_at = existing.get("started_at") or payload.get("started_at") or original_created_at
+    original_started_at = existing.get("started_at") or existing.get("created_at") or incoming.get("started_at") or incoming.get("created_at") or now_iso()
 
-    payload["created_at"] = original_created_at
+    payload["created_at"] = original_started_at
     payload["started_at"] = original_started_at
     payload["pages"] = payload.get("pages", payload.get("saved_count", 0))
     payload["saved_count"] = payload.get("saved_count", payload.get("pages", 0))
@@ -254,7 +263,7 @@ def save_job_status(job_id, status):
     payload["total_pages_target"] = payload.get("total_pages_target", existing.get("total_pages_target", 15))
 
     if normalized_status in ("fertig", "fehler", "abgebrochen"):
-        payload["finished_at"] = payload.get("finished_at", now_iso())
+        payload["finished_at"] = existing.get("finished_at") or incoming.get("finished_at") or now_iso()
 
     payload = enrich_job_metrics(payload)
 
@@ -279,7 +288,7 @@ def cleanup_old_jobs():
     for job_file in JOBS_DIR.glob("*.json"):
         try:
             job = json.loads(job_file.read_text(encoding="utf-8"))
-            created_at = job.get("created_at")
+            created_at = job.get("started_at") or job.get("created_at")
             status = normalize_status_label(job.get("status", ""))
 
             if not created_at:
@@ -323,7 +332,7 @@ def load_all_jobs():
         except Exception:
             pass
 
-    jobs = sorted(jobs, key=lambda x: x.get("created_at", ""), reverse=True)
+    jobs = sorted(jobs, key=lambda x: x.get("started_at", x.get("created_at", "")), reverse=True)
     return jobs
 
 
