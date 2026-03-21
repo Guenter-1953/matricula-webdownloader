@@ -392,22 +392,22 @@ def read_page_ocr_debug(path: Path):
 def adjust_clip_for_book_page(clip: dict, page) -> dict:
     try:
         viewport = page.viewport_size or {}
-        viewport_width = viewport.get("width", 2200)
+        viewport_width = float(viewport.get("width", 2200))
     except Exception:
-        viewport_width = 2200
+        viewport_width = 2200.0
 
-    x = max(0, float(clip["x"]))
-    y = max(0, float(clip["y"]))
+    x = max(0.0, float(clip["x"]))
+    y = max(0.0, float(clip["y"]))
     width = max(1.0, float(clip["width"]))
     height = max(1.0, float(clip["height"]))
 
-    # Wenn der erkannte Bereich sehr breit ist, rechts vorsichtig beschneiden.
-    # Ziel: rechte Metadaten-/Listen-Spalte reduzieren, linke Buchseite behalten.
-    if width > viewport_width * 0.72:
-        new_width = width * 0.72
+    # Nur ganz vorsichtige Kürzung rechts.
+    # Die Seite soll vollständig lesbar bleiben, auch auf der ersten Seite.
+    if width > viewport_width * 0.90:
+        new_width = width * 0.94
         log(
-            f"Clip rechts beschnitten: alt_w={width:.1f} neu_w={new_width:.1f} "
-            f"(viewport_w={viewport_width})"
+            f"Clip rechts leicht beschnitten: alt_w={width:.1f} neu_w={new_width:.1f} "
+            f"(viewport_w={viewport_width:.1f})"
         )
         width = new_width
 
@@ -455,17 +455,16 @@ def detect_viewer_clip(page, debug_job_dir: Path = None, page_num: int = None):
             info.centerX = centerX;
             info.centerY = centerY;
             info.minSizeOk = rect.width >= 800 && rect.height >= 800;
-            info.centerOk = !(centerX < viewportWidth * 0.15 || centerX > viewportWidth * 0.75);
+            info.centerOk = !(centerX < viewportWidth * 0.20 || centerX > viewportWidth * 0.80);
             info.centerYOk = !(centerY < viewportHeight * 0.15 || centerY > viewportHeight * 0.90);
             info.visibleOk = !(rect.right <= 0 || rect.bottom <= 0 || rect.left >= viewportWidth || rect.top >= viewportHeight);
             info.styleOk = !(style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || '1') === 0);
-            info.leftSideOk = rect.left < viewportWidth * 0.35;
 
             candidates.push(info);
         }
 
         const filtered = candidates.filter(c =>
-            c.minSizeOk && c.centerOk && c.centerYOk && c.visibleOk && c.styleOk && c.leftSideOk
+            c.minSizeOk && c.centerOk && c.centerYOk && c.visibleOk && c.styleOk
         );
 
         filtered.sort((a, b) => b.area - a.area);
