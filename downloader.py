@@ -92,6 +92,27 @@ def make_page_url(url: str, page_number: int) -> str:
     return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
 
 
+def normalize_source_url(url: str) -> str:
+    if not url:
+        return ""
+
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    query.pop("pg", None)
+
+    normalized_query = urlencode(sorted((key, value) for key, values in query.items() for value in values))
+    normalized_path = parsed.path.rstrip("/")
+
+    return urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        normalized_path,
+        parsed.params,
+        normalized_query,
+        ""
+    ))
+
+
 def should_auto_rename(book_name: str) -> bool:
     return bool(re.fullmatch(r"book_[a-zA-Z0-9]+", book_name))
 
@@ -138,6 +159,10 @@ def extract_book_meta_from_url(url: str) -> dict:
 
 def normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+def normalize_compare_value(value) -> str:
+    return normalize_whitespace(str(value or "")).lower()
 
 
 def contains_service_unavailable_text(text: str) -> bool:
@@ -315,6 +340,7 @@ def save_book_metadata(book_dir: Path, meta: dict, source_url: str):
         "jahr_von": meta.get("datum_von"),
         "jahr_bis": meta.get("datum_bis"),
         "source_url": source_url,
+        "normalized_source_url": normalize_source_url(source_url),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "dom_title_text": meta.get("dom_title_text", ""),
     }
@@ -334,6 +360,108 @@ def make_unique_target_dir(base_name: str) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
+
+
+def build_book_identity(meta: dict, source_url: str) -> dict:
+    return {
+        "normalized_source_url": normalize_source_url(source_url),
+        "country": normalize_compare_value(meta.get("country")),
+        "bistum": normalize_compare_value(meta.get("bistum")),
+        "pfarre": normalize_compare_value(meta.get("pfarre_ort")),
+        "signatur": normalize_compare_value(meta.get("signatur")),
+    }
+
+
+def load_book_json(book_dir: Path) -> dict | None:
+    path = book_dir / "book.json"
+    if not path.exists():
+        return None
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        log(f"book.json konnte nicht gelesen werden in {book_dir}: {e}")
+        return None
+
+
+def is_same_book_identity(existing_data: dict, wanted_identity: dict) -> bool:
+    existing_normalized_url = normalize_compare_value(
+        existing_data.get("normalized_source_url") or normalize_source_url(existing_data.get("source_url", ""))
+    )
+    wanted_normalized_url = normalize_compare_value(wanted_identity.get("normalized_source_url"))
+
+    if existing_normalized_url and wanted_normalized_url and existing_normalized_url == wanted_normalized_url:
+        return True
+
+    existing_country = normalize_compare_value(existing_data.get("country"))
+    existing_bistum = normalize_compare_value(existing_data.get("bistum"))
+    existing_pfarre = normalize_compare_value(existing_data.get("pfarre"))
+    existing_signatur = normalize_compare_value(existing_data.get("signatur"))
+
+    return (
+        existing_country == wanted_identity.get("country")
+        and existing_bistum == wanted_identity.get("bistum")
+        and existing_pfarre == wanted_identity.get("pfarre")
+        and existing_signatur == wanted_identity.get("signatur")
+        and bool(existing_signatur)
+    )
+
+
+def find_existing_book_dir(meta: dict, source_url: str, exclude_dir: Path | None = None) -> Path | None:
+    wanted_identity = build_book_identity(meta, source_url)
+
+    for candidate in sorted(BOOKS_DIR.glob("*")):
+        if not candidate.is_dir():
+            continue
+        if exclude_dir is not None and candidate.resolve() == exclude_dir.resolve():
+            continue
+
+        existing_data = load_book_json(candidate)
+        if not existing_data:
+            continue
+
+        if is_same_book_identity(existing_data, wanted_identity):
+            log(f"Bestehender Buchordner erkannt: {candidate}")
+            return candidate
+
+    return None
+
+
+def cleanup_empty_dir(path: Path):
+    try:
+        if path.exists() and path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+            log(f"Leerer Ordner entfernt: {path}")
+    except Exception as e:
+        log(f"Leerer Ordner konnte nicht entfernt werden {path}: {e}")
+
+
+def get_next_local_page_number(book_dir: Path) -> int:
+    highest = 0
+
+    for image_path in book_dir.glob("page_*.png"):
+        match = re.fullmatch(r"page_(\d{4})\.png", image_path.name)
+        if match:
+            highest = max(highest, int(match.group(1)))
+
+    return highest + 1
+
+
+def maybe_attach_to_existing_book(book_dir: Path, book_name: str, pdf_path: Path, meta: dict, source_url: str):
+    existing_dir = find_existing_book_dir(meta=meta, source_url=source_url, exclude_dir=book_dir)
+    if existing_dir is None:
+        return book_dir, book_name, pdf_path, False
+
+    if existing_dir.resolve() == book_dir.resolve():
+        return book_dir, book_name, pdf_path, False
+
+    cleanup_empty_dir(book_dir)
+
+    existing_name = existing_dir.name
+    existing_pdf_path = PDF_DIR / f"{existing_name}.pdf"
+
+    log(f"Neue Seiten werden an bestehenden Buchordner angehängt: {existing_name}")
+    return existing_dir, existing_name, existing_pdf_path, True
 
 
 def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: dict):
@@ -1033,24 +1161,24 @@ def run_download_job(
 
             meta = enrich_meta_from_dom(meta, dom_candidates)
 
-            old_book_name = book_name
-            book_dir, fs_book_name, pdf_path, renamed, display_name = maybe_rename_book_dir(
+            book_dir, attached_book_name, attached_pdf_path, attached = maybe_attach_to_existing_book(
                 book_dir=book_dir,
                 book_name=book_name,
                 pdf_path=pdf_path,
                 meta=meta,
+                source_url=url,
             )
 
-            if renamed:
-                log(f"Dateisystem-Name geändert: {old_book_name} -> {fs_book_name}")
-                log(f"Anzeigename für Job: {display_name}")
-                book_name = display_name
+            if attached:
+                book_name = attached_book_name
+                pdf_path = attached_pdf_path
+
                 update_status(
                     save_job_status=save_job_status,
                     job_id=job_id,
                     book_name=book_name,
                     status="running",
-                    message="Buchname wurde automatisch ermittelt.",
+                    message="Bestehender Buchordner erkannt, neue Seiten werden angehängt.",
                     saved_count=0,
                     current_page=effective_start_page,
                     total_pages_target=total_pages_to_fetch,
@@ -1058,8 +1186,17 @@ def run_download_job(
                     end_page=requested_end_page,
                 )
             else:
-                if display_name and display_name != old_book_name:
-                    log(f"Kein Rename nötig/möglich, aber Anzeigename wird gesetzt: {display_name}")
+                old_book_name = book_name
+                book_dir, fs_book_name, pdf_path, renamed, display_name = maybe_rename_book_dir(
+                    book_dir=book_dir,
+                    book_name=book_name,
+                    pdf_path=pdf_path,
+                    meta=meta,
+                )
+
+                if renamed:
+                    log(f"Dateisystem-Name geändert: {old_book_name} -> {fs_book_name}")
+                    log(f"Anzeigename für Job: {display_name}")
                     book_name = display_name
                     update_status(
                         save_job_status=save_job_status,
@@ -1074,7 +1211,23 @@ def run_download_job(
                         end_page=requested_end_page,
                     )
                 else:
-                    log(f"Jobname unverändert: {book_name}")
+                    if display_name and display_name != old_book_name:
+                        log(f"Kein Rename nötig/möglich, aber Anzeigename wird gesetzt: {display_name}")
+                        book_name = display_name
+                        update_status(
+                            save_job_status=save_job_status,
+                            job_id=job_id,
+                            book_name=book_name,
+                            status="running",
+                            message="Buchname wurde automatisch ermittelt.",
+                            saved_count=0,
+                            current_page=effective_start_page,
+                            total_pages_target=total_pages_to_fetch,
+                            start_page=requested_start_page,
+                            end_page=requested_end_page,
+                        )
+                    else:
+                        log(f"Jobname unverändert: {book_name}")
 
             save_book_metadata(book_dir, meta, url)
 
@@ -1094,11 +1247,14 @@ def run_download_job(
 
             log(f"Download beginnt ab Inhaltsseite {content_start_page}")
 
+            next_local_page_number = get_next_local_page_number(book_dir)
+            log(f"Nächste lokale Seitennummer im Zielordner: {next_local_page_number:04d}")
+
             saved_count = 0
             failed_pages = []
 
             for offset in range(total_pages_to_fetch):
-                local_page_num = offset + 1
+                local_page_num = next_local_page_number + offset
                 source_page_num = content_start_page + offset
 
                 if requested_end_page is not None and source_page_num > requested_end_page:
@@ -1226,6 +1382,8 @@ def run_download_job(
             create_pdf(book_dir, pdf_path)
 
             finish_message = "Download abgeschlossen."
+            if attached:
+                finish_message = "Download abgeschlossen, Seiten wurden an bestehendes Buch angehängt."
             if remaining_failed:
                 finish_message = (
                     f"Download abgeschlossen, aber {len(remaining_failed)} Seiten "
