@@ -37,30 +37,36 @@ def normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def split_name(raw_name: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def clean_name_text(raw_name: Optional[str]) -> Optional[str]:
     raw_name = safe_str(raw_name)
     if not raw_name:
-        return None, None, None
+        return None
 
     cleaned = normalize_whitespace(raw_name)
-
     cleaned = re.sub(r"\(.*?\)", "", cleaned).strip()
     cleaned = normalize_whitespace(cleaned)
 
+    return cleaned or None
+
+
+def split_name(raw_name: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    cleaned = clean_name_text(raw_name)
     if not cleaned:
-        return raw_name, None, None
+        return None, None, None
 
     parts = cleaned.split(" ")
 
     if len(parts) == 1:
         return cleaned, cleaned, None
 
-    surname = parts[0]
-    given_name = " ".join(parts[1:])
+    if len(parts) == 2:
+        surname = parts[0]
+        given_name = parts[1]
+        full_name = f"{given_name} {surname}".strip()
+        return full_name, given_name, surname
 
-    full_name = f"{given_name} {surname}".strip()
-
-    return full_name, given_name, surname
+    # Ab 3 Wörtern lieber konservativ bleiben als falsch zerlegen
+    return cleaned, None, None
 
 
 def infer_status_from_text(text: str, role: str) -> Optional[str]:
@@ -72,9 +78,9 @@ def infer_status_from_text(text: str, role: str) -> Optional[str]:
         return "witwe"
     if "virgo" in t or "ledig" in t:
         return "ledig"
-    if "adolescens" in t:
-        if role == "groom":
-            return "ledig"
+    if "adolescens" in t and role == "groom":
+        return "ledig"
+
     return None
 
 
@@ -95,7 +101,7 @@ def infer_residence_from_text(text: str) -> Optional[str]:
     return None
 
 
-def infer_flags_from_text(text: str, role: str) -> List[str]:
+def infer_flags_from_text(text: str) -> List[str]:
     flags: List[str] = []
     t = text.lower()
 
@@ -116,7 +122,7 @@ def infer_flags_from_text(text: str, role: str) -> List[str]:
     return unique_flags
 
 
-def extract_flags(person_data: Dict[str, Any], role: str, entry_details: Dict[str, Any], entry_notes: List[Any]) -> List[str]:
+def extract_flags(person_data: Dict[str, Any], entry_details: Dict[str, Any], entry_notes: List[Any]) -> List[str]:
     flags: List[str] = []
 
     status = safe_str(person_data.get("status"))
@@ -127,15 +133,13 @@ def extract_flags(person_data: Dict[str, Any], role: str, entry_details: Dict[st
 
     if status:
         status_lower = status.lower()
-        if role == "groom" and "witwer" in status_lower:
+        if "witwer" in status_lower:
             flags.append("widower")
-        if role == "bride" and "witwe" in status_lower:
+        if "witwe" in status_lower:
             flags.append("widow")
-        if "ledig" in status_lower and role == "bride":
-            pass
 
     for source_text in [person_notes_text, person_details_text.lower(), entry_details_text, entry_notes_text]:
-        for flag in infer_flags_from_text(source_text, role):
+        for flag in infer_flags_from_text(source_text):
             if flag not in flags:
                 flags.append(flag)
 
@@ -155,12 +159,13 @@ def build_person_name_fields(person_data: Dict[str, Any]) -> Dict[str, Optional[
     name_original = safe_str(person_data.get("name_original"))
 
     raw_name = safe_str(person_data.get("name"))
+    cleaned_raw_name = clean_name_text(raw_name)
 
     if not full_name and (given_name or surname):
         full_name = build_full_name(given_name, surname)
 
-    if not full_name and raw_name:
-        guessed_full_name, guessed_given_name, guessed_surname = split_name(raw_name)
+    if not full_name and cleaned_raw_name:
+        guessed_full_name, guessed_given_name, guessed_surname = split_name(cleaned_raw_name)
         full_name = guessed_full_name
         if not given_name:
             given_name = guessed_given_name
@@ -221,7 +226,7 @@ def make_person(
         "name_original": name_fields["name_original"],
         "sex": safe_str(person_data.get("sex")),
         "attributes": clean_attributes,
-        "flags": extract_flags(person_data, role, entry_details, entry_notes),
+        "flags": extract_flags(person_data, entry_details, entry_notes),
         "raw": person_data,
     }
 
