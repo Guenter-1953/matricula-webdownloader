@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime
 
 
-VERSION_FILE = Path("/app/version.json")
+VERSION_FILE = Path("version.json")
 
 
 def load_version_data() -> dict:
