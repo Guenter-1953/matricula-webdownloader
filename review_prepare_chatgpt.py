@@ -1,5 +1,6 @@
 import json
 import shutil
+import sys
 from pathlib import Path
 from datetime import datetime
 
@@ -30,26 +31,43 @@ def save_queue(queue: list) -> None:
     )
 
 
-def find_selected_item(queue: list) -> dict | None:
+def get_book_name_from_item(item: dict) -> str | None:
+    source_image = item.get("source_image")
+    if not source_image:
+        return None
+    try:
+        return Path(source_image).parent.name
+    except Exception:
+        return None
+
+
+def find_selected_items(queue: list, limit: int, book_name: str | None = None) -> list:
+    selected = []
+
     for item in queue:
-        if item.get("status") == "selected_for_review":
-            return item
-    return None
+        if item.get("status") != "selected_for_review":
+            continue
+
+        item_book_name = get_book_name_from_item(item)
+        if book_name and item_book_name != book_name:
+            continue
+
+        selected.append(item)
+
+        if len(selected) >= limit:
+            break
+
+    return selected
 
 
-def build_export_name(source_image: Path) -> str:
+def build_export_base(source_image: Path) -> str:
     book_name = source_image.parent.name
-    return f"{book_name}__{source_image.name}"
+    return f"{book_name}__{source_image.stem}"
 
 
-def prepare_chatgpt_package() -> dict:
-    queue = load_queue()
-    selected = find_selected_item(queue)
+def prepare_one_item(item: dict) -> dict:
+    source_image = Path(item["source_image"])
 
-    if selected is None:
-        return {"status": "no_selected_item"}
-
-    source_image = Path(selected["source_image"])
     if not source_image.exists():
         return {
             "status": "source_missing",
@@ -58,9 +76,9 @@ def prepare_chatgpt_package() -> dict:
 
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    export_base = build_export_name(source_image)
-    export_image = EXPORT_DIR / export_base
-    export_json = EXPORT_DIR / f"{source_image.stem}_chatgpt_request.json"
+    export_base = build_export_base(source_image)
+    export_image = EXPORT_DIR / f"{export_base}{source_image.suffix}"
+    export_json = EXPORT_DIR / f"{export_base}_chatgpt_request.json"
 
     shutil.copy2(source_image, export_image)
 
@@ -77,10 +95,10 @@ def prepare_chatgpt_package() -> dict:
                 "alle Einträge erkennen",
                 "Namen, Daten, Orte, Berufe, Eltern, Zeugen, Randvermerke erfassen",
                 "Latein nach Möglichkeit auf Deutsch wiedergeben",
-                "strukturierte Ausgabe erzeugen"
+                "strukturierte Ausgabe erzeugen",
             ],
         },
-        "reason": selected.get("reason", {}),
+        "reason": item.get("reason", {}),
     }
 
     export_json.write_text(
@@ -88,39 +106,120 @@ def prepare_chatgpt_package() -> dict:
         encoding="utf-8",
     )
 
-    for item in queue:
-        if item.get("source_image") == str(source_image):
-            item["status"] = "prepared_for_chatgpt"
-            item["prepared_at"] = now_iso()
-
-    save_queue(queue)
+    item["status"] = "prepared_for_chatgpt"
+    item["prepared_at"] = now_iso()
+    item["chatgpt_export_image"] = str(export_image)
+    item["chatgpt_export_json"] = str(export_json)
 
     return {
         "status": "prepared",
         "source_image": str(source_image),
         "export_image": str(export_image),
         "export_json": str(export_json),
+        "book_name": source_image.parent.name,
+        "page_id": source_image.stem,
+    }
+
+
+def prepare_chatgpt_packages(limit: int = 15, book_name: str | None = None) -> dict:
+    queue = load_queue()
+    selected_items = find_selected_items(queue, limit=limit, book_name=book_name)
+
+    if not selected_items:
+        return {
+            "status": "no_selected_items",
+            "requested_limit": limit,
+            "book_name": book_name,
+            "prepared_count": 0,
+            "results": [],
+        }
+
+    results = []
+
+    for item in selected_items:
+        result = prepare_one_item(item)
+        results.append(result)
+
+    save_queue(queue)
+
+    prepared_count = sum(1 for r in results if r.get("status") == "prepared")
+    missing_count = sum(1 for r in results if r.get("status") == "source_missing")
+
+    return {
+        "status": "prepared_batch",
+        "requested_limit": limit,
+        "book_name": book_name,
+        "selected_count": len(selected_items),
+        "prepared_count": prepared_count,
+        "missing_count": missing_count,
+        "results": results,
     }
 
 
 def main():
-    result = prepare_chatgpt_package()
+    limit = 15
+    book_name = None
+
+    if len(sys.argv) >= 2:
+        try:
+            limit = int(sys.argv[1])
+        except ValueError:
+            print("Fehler: erstes Argument muss eine Zahl sein, z. B. 15")
+            sys.exit(1)
+
+    if len(sys.argv) >= 3:
+        book_name = sys.argv[2]
+
+    result = prepare_chatgpt_packages(limit=limit, book_name=book_name)
 
     print("=== CHATGPT-VORBEREITUNG ===")
     print("Status:")
     print(result.get("status"))
+    print("Angeforderte Anzahl:")
+    print(result.get("requested_limit"))
 
-    if result.get("source_image"):
-        print("Quelle:")
-        print(result["source_image"])
+    if result.get("book_name"):
+        print("Buchfilter:")
+        print(result.get("book_name"))
 
-    if result.get("export_image"):
-        print("Kopiertes Bild:")
-        print(result["export_image"])
+    if "selected_count" in result:
+        print("Gefundene ausgewählte Seiten:")
+        print(result.get("selected_count"))
 
-    if result.get("export_json"):
-        print("Info-Datei:")
-        print(result["export_json"])
+    print("Vorbereitet:")
+    print(result.get("prepared_count", 0))
+
+    if "missing_count" in result:
+        print("Fehlende Quelldateien:")
+        print(result.get("missing_count"))
+
+    if result.get("results"):
+        print("")
+        print("Details:")
+        for entry in result["results"]:
+            print("---")
+            print("Status:")
+            print(entry.get("status"))
+
+            if entry.get("book_name"):
+                print("Buch:")
+                print(entry.get("book_name"))
+
+            if entry.get("page_id"):
+                print("Seite:")
+                print(entry.get("page_id"))
+
+            if entry.get("source_image"):
+                print("Quelle:")
+                print(entry.get("source_image"))
+
+            if entry.get("export_image"):
+                print("Kopiertes Bild:")
+                print(entry.get("export_image"))
+
+            if entry.get("export_json"):
+                print("Info-Datei:")
+                print(entry.get("export_json"))
 
 
 if __name__ == "__main__":
