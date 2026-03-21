@@ -39,6 +39,13 @@ DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 DEBUG_PAGE_COUNT = 15
 SMART_SKIP_LIMIT = 8
 
+SERVICE_UNAVAILABLE_PATTERNS = [
+    "service unavailable",
+    "temporarily unable to service your request",
+    "please try again later",
+    "apache/2.4",
+]
+
 
 def log(msg: str):
     print(f"[DEBUG] {msg}")
@@ -131,6 +138,37 @@ def extract_book_meta_from_url(url: str) -> dict:
 
 def normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+def contains_service_unavailable_text(text: str) -> bool:
+    lower = (text or "").lower()
+    return any(pattern in lower for pattern in SERVICE_UNAVAILABLE_PATTERNS)
+
+
+def page_shows_service_unavailable(page) -> bool:
+    try:
+        parts = []
+
+        try:
+            parts.append(page.title() or "")
+        except Exception:
+            pass
+
+        try:
+            parts.append(page.locator("body").inner_text(timeout=1000) or "")
+        except Exception:
+            pass
+
+        try:
+            parts.append(page.content() or "")
+        except Exception:
+            pass
+
+        combined = "\n".join(parts)
+        return contains_service_unavailable_text(combined)
+    except Exception as e:
+        log(f"page_shows_service_unavailable Fehler: {e}")
+        return False
 
 
 def detect_book_type_from_text(text: str) -> str:
@@ -696,6 +734,10 @@ def find_first_content_page(page, base_url: str, start_page: int, debug_job_dir:
         page.wait_for_timeout(3500)
         time.sleep(short_pause())
 
+        if page_shows_service_unavailable(page):
+            log(f"Service-Unavailable bei Startseitenprüfung {probe_page}, überspringe Probe")
+            continue
+
         probe_raw = debug_job_dir / f"probe_raw_{probe_page}.png"
         probe_final = debug_job_dir / f"probe_page_{probe_page}.png"
 
@@ -718,6 +760,135 @@ def find_first_content_page(page, base_url: str, start_page: int, debug_job_dir:
 
     log(f"Keine eindeutige Inhaltsseite gefunden, verwende Startseite {start_page}")
     return start_page
+
+
+def process_source_page(
+    page,
+    book_dir: Path,
+    debug_job_dir: Path,
+    local_page_num: int,
+    source_page_num: int,
+    current_page_url: str,
+) -> tuple[bool, str]:
+    page.goto(current_page_url)
+    page.wait_for_timeout(3500)
+    time.sleep(short_pause())
+
+    if page_shows_service_unavailable(page):
+        log(f"Service-Unavailable im HTML erkannt bei Quellseite {source_page_num}")
+        return False, "service_unavailable_html"
+
+    raw_page_path = debug_job_dir / f"raw_source_{source_page_num}.png"
+    final_page_path = book_dir / f"page_{local_page_num:04d}.png"
+
+    save_viewer_screenshot(
+        page=page,
+        raw_path=raw_page_path,
+        final_path=final_page_path,
+        debug_job_dir=debug_job_dir,
+        page_num=source_page_num,
+    )
+
+    page_ocr_text, page_ocr_error = read_page_ocr_debug(raw_page_path)
+
+    if contains_service_unavailable_text(page_ocr_text):
+        log(f"Service-Unavailable im OCR erkannt bei Quellseite {source_page_num}")
+        try:
+            if final_page_path.exists():
+                final_page_path.unlink()
+        except Exception:
+            pass
+        return False, "service_unavailable_ocr"
+
+    write_text_file(book_dir / f"page_{local_page_num:04d}.ocr.txt", page_ocr_text or "")
+    write_text_file(debug_job_dir / f"page_{local_page_num:04d}.ocr.txt", page_ocr_text or "")
+
+    if page_ocr_error:
+        log(f"OCR-Debug Fehler Quellseite {source_page_num}: {page_ocr_error}")
+    else:
+        log(f"OCR-Debug Zeichen Quellseite {source_page_num}: {len(page_ocr_text or '')}")
+
+    create_page_metadata(
+        book_dir=book_dir,
+        local_page_number=local_page_num,
+        source_page_number=source_page_num,
+        image_path=final_page_path,
+        source_url=current_page_url,
+        ocr_text=page_ocr_text,
+    )
+
+    return True, "ok"
+
+
+def retry_failed_pages(
+    page,
+    failed_pages: list,
+    book_dir: Path,
+    debug_job_dir: Path,
+    job_id: str,
+    book_name: str,
+    save_job_status,
+    saved_count: int,
+) -> tuple[int, list]:
+    remaining_failed = []
+
+    for failed in failed_pages:
+        local_page_num = failed["local_page_number"]
+        source_page_num = failed["source_page_number"]
+        current_page_url = failed["source_url"]
+
+        update_status(
+            save_job_status=save_job_status,
+            job_id=job_id,
+            book_name=book_name,
+            status="running",
+            message=f"Nachladeversuch für Quellseite {source_page_num} ...",
+            saved_count=saved_count,
+            current_page=source_page_num,
+        )
+
+        success = False
+
+        for attempt in range(1, 4):
+            log(
+                f"Nachladeversuch {attempt}/3 für "
+                f"lokale Seite {local_page_num:04d} "
+                f"(Quelle {source_page_num})"
+            )
+
+            success, reason = process_source_page(
+                page=page,
+                book_dir=book_dir,
+                debug_job_dir=debug_job_dir,
+                local_page_num=local_page_num,
+                source_page_num=source_page_num,
+                current_page_url=current_page_url,
+            )
+
+            if success:
+                saved_count += 1
+                update_status(
+                    save_job_status=save_job_status,
+                    job_id=job_id,
+                    book_name=book_name,
+                    status="running",
+                    message=f"Nachgeladen: Seite {local_page_num:04d} (Quelle {source_page_num})",
+                    saved_count=saved_count,
+                    current_page=source_page_num,
+                )
+                break
+
+            log(f"Nachladeversuch fehlgeschlagen: {reason}")
+            time.sleep(5 + attempt * 3)
+
+        if not success:
+            failed_copy = dict(failed)
+            failed_copy["final_reason"] = reason
+            remaining_failed.append(failed_copy)
+
+        time.sleep(human_pause())
+
+    return saved_count, remaining_failed
 
 
 def run_download_job(job_id, url, book_name, save_job_status):
@@ -822,10 +993,12 @@ def run_download_job(job_id, url, book_name, save_job_status):
 
             log(f"Download beginnt ab Inhaltsseite {content_start_page}")
 
-            source_page_num = content_start_page
             saved_count = 0
+            failed_pages = []
 
-            for local_page_num in range(1, DEBUG_PAGE_COUNT + 1):
+            for offset in range(DEBUG_PAGE_COUNT):
+                local_page_num = offset + 1
+                source_page_num = content_start_page + offset
                 current_page_url = make_page_url(url, source_page_num)
 
                 update_status(
@@ -839,53 +1012,80 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 )
 
                 log(f"Lade Quellseite {source_page_num}: {current_page_url}")
-                page.goto(current_page_url)
-                page.wait_for_timeout(3500)
-                time.sleep(short_pause())
 
-                raw_page_path = debug_job_dir / f"raw_source_{source_page_num}.png"
-                final_page_path = book_dir / f"page_{local_page_num:04d}.png"
-
-                save_viewer_screenshot(
+                success, reason = process_source_page(
                     page=page,
-                    raw_path=raw_page_path,
-                    final_path=final_page_path,
-                    debug_job_dir=debug_job_dir,
-                    page_num=source_page_num,
-                )
-
-                page_ocr_text, page_ocr_error = read_page_ocr_debug(raw_page_path)
-                write_text_file(book_dir / f"page_{local_page_num:04d}.ocr.txt", page_ocr_text or "")
-                write_text_file(debug_job_dir / f"page_{local_page_num:04d}.ocr.txt", page_ocr_text or "")
-
-                if page_ocr_error:
-                    log(f"OCR-Debug Fehler Quellseite {source_page_num}: {page_ocr_error}")
-                else:
-                    log(f"OCR-Debug Zeichen Quellseite {source_page_num}: {len(page_ocr_text or '')}")
-
-                create_page_metadata(
                     book_dir=book_dir,
-                    local_page_number=local_page_num,
-                    source_page_number=source_page_num,
-                    image_path=final_page_path,
-                    source_url=current_page_url,
-                    ocr_text=page_ocr_text,
+                    debug_job_dir=debug_job_dir,
+                    local_page_num=local_page_num,
+                    source_page_num=source_page_num,
+                    current_page_url=current_page_url,
                 )
 
-                saved_count += 1
+                if success:
+                    saved_count += 1
+                    update_status(
+                        save_job_status=save_job_status,
+                        job_id=job_id,
+                        book_name=book_name,
+                        status="running",
+                        message=f"Seite {local_page_num:04d} gespeichert (Quelle {source_page_num})",
+                        saved_count=saved_count,
+                        current_page=source_page_num,
+                    )
+                else:
+                    failed_pages.append({
+                        "local_page_number": local_page_num,
+                        "source_page_number": source_page_num,
+                        "source_url": current_page_url,
+                        "initial_reason": reason,
+                    })
+                    update_status(
+                        save_job_status=save_job_status,
+                        job_id=job_id,
+                        book_name=book_name,
+                        status="running",
+                        message=f"Quellseite {source_page_num} fehlgeschlagen, wird später erneut versucht.",
+                        saved_count=saved_count,
+                        current_page=source_page_num,
+                    )
+
+                time.sleep(human_pause())
+
+            remaining_failed = []
+
+            if failed_pages:
+                save_json(debug_job_dir / "failed_pages_initial.json", failed_pages)
 
                 update_status(
                     save_job_status=save_job_status,
                     job_id=job_id,
                     book_name=book_name,
                     status="running",
-                    message=f"Seite {local_page_num:04d} gespeichert (Quelle {source_page_num})",
+                    message=f"Starte Nachladeversuche für {len(failed_pages)} Fehlerseiten ...",
                     saved_count=saved_count,
-                    current_page=source_page_num,
+                    current_page=failed_pages[0]["source_page_number"],
                 )
 
-                source_page_num += 1
-                time.sleep(human_pause())
+                saved_count, remaining_failed = retry_failed_pages(
+                    page=page,
+                    failed_pages=failed_pages,
+                    book_dir=book_dir,
+                    debug_job_dir=debug_job_dir,
+                    job_id=job_id,
+                    book_name=book_name,
+                    save_job_status=save_job_status,
+                    saved_count=saved_count,
+                )
+
+                save_json(
+                    debug_job_dir / "failed_pages_retry_result.json",
+                    {
+                        "initial_failed_count": len(failed_pages),
+                        "remaining_failed_count": len(remaining_failed),
+                        "remaining_failed_pages": remaining_failed,
+                    },
+                )
 
             update_status(
                 save_job_status=save_job_status,
@@ -894,20 +1094,27 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 status="running",
                 message="Erzeuge PDF ...",
                 saved_count=saved_count,
-                current_page=source_page_num - 1,
+                current_page=content_start_page + DEBUG_PAGE_COUNT - 1,
             )
 
             save_book_metadata(book_dir, meta, url)
             create_pdf(book_dir, pdf_path)
+
+            finish_message = "Download abgeschlossen."
+            if remaining_failed:
+                finish_message = (
+                    f"Download abgeschlossen, aber {len(remaining_failed)} Seiten "
+                    f"konnten nicht nachgeladen werden."
+                )
 
             update_status(
                 save_job_status=save_job_status,
                 job_id=job_id,
                 book_name=book_name,
                 status="finished",
-                message="Download abgeschlossen.",
+                message=finish_message,
                 saved_count=saved_count,
-                current_page=source_page_num - 1,
+                current_page=content_start_page + DEBUG_PAGE_COUNT - 1,
                 pdf_path=pdf_path,
             )
 
