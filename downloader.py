@@ -389,38 +389,6 @@ def read_page_ocr_debug(path: Path):
         return "", str(e)
 
 
-def adjust_clip_for_book_page(clip: dict, page) -> dict:
-    try:
-        viewport = page.viewport_size or {}
-        viewport_width = float(viewport.get("width", 2200))
-    except Exception:
-        viewport_width = 2200.0
-
-    x = max(0.0, float(clip["x"]))
-    y = max(0.0, float(clip["y"]))
-    width = max(1.0, float(clip["width"]))
-    height = max(1.0, float(clip["height"]))
-
-    # Nur ganz vorsichtige Kürzung rechts.
-    # Die Seite soll vollständig lesbar bleiben, auch auf der ersten Seite.
-    if width > viewport_width * 0.90:
-        new_width = width * 0.94
-        log(
-            f"Clip rechts leicht beschnitten: alt_w={width:.1f} neu_w={new_width:.1f} "
-            f"(viewport_w={viewport_width:.1f})"
-        )
-        width = new_width
-
-    adjusted = {
-        "x": x,
-        "y": y,
-        "width": max(100.0, width),
-        "height": max(100.0, height),
-    }
-
-    return adjusted
-
-
 def detect_viewer_clip(page, debug_job_dir: Path = None, page_num: int = None):
     script = """
     () => {
@@ -499,8 +467,6 @@ def detect_viewer_clip(page, debug_job_dir: Path = None, page_num: int = None):
             "width": best["width"],
             "height": best["height"],
         }
-
-        clip = adjust_clip_for_book_page(clip, page)
 
         log(
             "Viewer-Kandidat gewählt: "
