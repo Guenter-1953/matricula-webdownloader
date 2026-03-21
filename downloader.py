@@ -36,7 +36,7 @@ PDF_DIR.mkdir(parents=True, exist_ok=True)
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-DEBUG_PAGE_COUNT = 5
+DEBUG_PAGE_COUNT = 15
 SMART_SKIP_LIMIT = 8
 
 
