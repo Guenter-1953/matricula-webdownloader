@@ -145,7 +145,7 @@ def infer_phase(payload: dict) -> str:
         return "metadaten"
     if "prüfe startseite" in message or "startseite" in message:
         return "startseite"
-    if "lade quellseite" in message or "gespeichert" in message:
+    if "lade quellseite" in message or "gespeichert" in message or "übersprungen" in message:
         return "download"
     if status == "gestartet":
         return "gestartet"
@@ -215,17 +215,7 @@ def enrich_job_metrics(job: dict) -> dict:
     finished_dt = parse_iso(finished_at)
 
     runtime_seconds = None
-
-    stored_runtime_seconds = job.get("runtime_seconds")
-    try:
-        if stored_runtime_seconds is not None:
-            stored_runtime_seconds = int(stored_runtime_seconds)
-    except Exception:
-        stored_runtime_seconds = None
-
-    if status in ("fertig", "fehler", "abgebrochen") and stored_runtime_seconds is not None:
-        runtime_seconds = max(0, stored_runtime_seconds)
-    elif started_dt is not None:
+    if started_dt is not None:
         if status in ("fertig", "fehler", "abgebrochen") and finished_dt is not None:
             runtime_seconds = max(0, int((finished_dt - started_dt).total_seconds()))
         else:
