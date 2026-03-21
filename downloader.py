@@ -53,11 +53,11 @@ def log(msg: str):
 
 
 def human_pause() -> float:
-    return round(random.uniform(8.0, 18.0), 2)
+    return round(random.uniform(1.2, 2.8), 2)
 
 
 def short_pause() -> float:
-    return round(random.uniform(1.2, 3.8), 2)
+    return round(random.uniform(0.3, 0.9), 2)
 
 
 def write_text_file(path: Path, text: str):
@@ -358,18 +358,49 @@ def extract_field_from_title_text(text: str, field_name: str) -> str | None:
     if not value:
         return None
 
-    if re.search(r"\b0\d-[A-Za-zÄÖÜäöü]+-\d{4}\b", value):
-        return None
-
     value = re.split(r"\b0\d-[A-Za-zÄÖÜäöü]+-\d{4}\b", value)[0].strip()
     value = re.split(r"\bKontakt\b", value, flags=re.IGNORECASE)[0].strip()
     value = re.split(r"\bMatricula\b", value, flags=re.IGNORECASE)[0].strip()
 
-    return normalize_whitespace(value) or None
+    cleaned = normalize_whitespace(value)
+    return cleaned or None
 
 
-def improve_book_meta_from_title(meta: dict) -> dict:
+def parse_from_page_title(meta: dict, page_title: str) -> dict:
+    if not page_title:
+        return meta
+
+    parts = [normalize_whitespace(part) for part in page_title.split("|") if normalize_whitespace(part)]
+
+    if len(parts) >= 2:
+        first = parts[0]
+        second = parts[1]
+
+        if " - " in first:
+            first_left, first_right = first.rsplit(" - ", 1)
+            if not meta.get("buchtyp") or normalize_compare_value(meta.get("buchtyp")) == "kirchenbuch":
+                if first_left:
+                    meta["buchtyp"] = first_left
+            if not meta.get("signatur") or normalize_compare_value(meta.get("signatur")) in {"unbekannt", ""}:
+                if first_right:
+                    meta["signatur"] = first_right
+
+        current_place = normalize_compare_value(meta.get("pfarre_ort"))
+        if current_place in {"de_ful3_jdw", "unbekannt", ""} and second:
+            meta["pfarre_ort"] = second
+
+        if len(parts) >= 3:
+            third = parts[2]
+            if not meta.get("bistum") or normalize_compare_value(meta.get("bistum")) in {"fulda", "unbekannt", ""}:
+                if third:
+                    meta["bistum"] = third
+
+    return meta
+
+
+def improve_book_meta_from_title(meta: dict, dom_candidates: dict) -> dict:
     text = meta.get("dom_title_text", "") or ""
+    page_title = normalize_whitespace(dom_candidates.get("page_title", "") or "")
 
     place_value = extract_field_from_title_text(text, "Pfarre/Ort")
     if place_value:
@@ -390,6 +421,8 @@ def improve_book_meta_from_title(meta: dict) -> dict:
         meta["datum_von"] = match_from.group(1)
     if match_to:
         meta["datum_bis"] = match_to.group(1)
+
+    meta = parse_from_page_title(meta, page_title)
 
     log(f"Verbesserte Metadaten aus Titelseite: {meta}")
     return meta
@@ -711,7 +744,7 @@ def center_viewer_canvas(page):
             return
 
         page.mouse.click(result["x"], result["y"])
-        page.wait_for_timeout(400)
+        page.wait_for_timeout(200)
 
         start_x = result["x"]
         start_y = result["y"]
@@ -719,9 +752,9 @@ def center_viewer_canvas(page):
 
         page.mouse.move(start_x, start_y)
         page.mouse.down()
-        page.mouse.move(end_x, start_y, steps=10)
+        page.mouse.move(end_x, start_y, steps=8)
         page.mouse.up()
-        page.wait_for_timeout(600)
+        page.wait_for_timeout(300)
 
     except Exception as e:
         log(f"Viewer-Zentrierung fehlgeschlagen: {e}")
@@ -940,8 +973,8 @@ def find_first_content_page(page, base_url: str, start_page: int, debug_job_dir:
         )
 
         log(f"Prüfe mögliche Startseite {probe_page}: {current_page_url}")
-        page.goto(current_page_url)
-        page.wait_for_timeout(3500)
+        page.goto(current_page_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(1000)
         time.sleep(short_pause())
 
         if page_shows_service_unavailable(page):
@@ -987,8 +1020,8 @@ def process_source_page(
         log(f"Seite {local_page_num:04d} existiert bereits, überspringe erneutes Speichern")
         return True, "already_exists"
 
-    page.goto(current_page_url)
-    page.wait_for_timeout(3500)
+    page.goto(current_page_url, wait_until="domcontentloaded")
+    page.wait_for_timeout(1200)
     time.sleep(short_pause())
 
     if page_shows_service_unavailable(page):
@@ -1105,7 +1138,7 @@ def retry_failed_pages(
                 break
 
             log(f"Nachladeversuch fehlgeschlagen: {reason}")
-            time.sleep(5 + attempt * 3)
+            time.sleep(2 + attempt * 2)
 
         if not success:
             failed_copy = dict(failed)
@@ -1222,8 +1255,8 @@ def run_download_job(
 
             meta_url = make_page_url(url, 1)
             log(f"Lade Metadaten immer von Seite 1: {meta_url}")
-            page.goto(meta_url)
-            page.wait_for_timeout(2500)
+            page.goto(meta_url, wait_until="domcontentloaded")
+            page.wait_for_timeout(1200)
 
             dom_candidates = extract_dom_text_candidates(page)
             write_text_file(
@@ -1232,7 +1265,7 @@ def run_download_job(
             )
 
             meta = enrich_meta_from_dom(meta, dom_candidates)
-            meta = improve_book_meta_from_title(meta)
+            meta = improve_book_meta_from_title(meta, dom_candidates)
 
             book_dir, attached_book_name, attached_pdf_path, attached = maybe_attach_to_existing_book(
                 book_dir=book_dir,
