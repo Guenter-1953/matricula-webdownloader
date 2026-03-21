@@ -583,7 +583,19 @@ def create_page_metadata(
         log(f"page.json konnte nicht erzeugt werden für lokale Seite {local_page_number}: {e}")
 
 
-def update_status(save_job_status, job_id, book_name, status, message, saved_count=0, current_page=None, pdf_path=None):
+def update_status(
+    save_job_status,
+    job_id,
+    book_name,
+    status,
+    message,
+    saved_count=0,
+    current_page=None,
+    pdf_path=None,
+    total_pages_target=None,
+    start_page=None,
+    end_page=None,
+):
     log(
         f"Statusupdate: job_id={job_id} "
         f"book_name={book_name} status={status} "
@@ -607,6 +619,12 @@ def update_status(save_job_status, job_id, book_name, status, message, saved_cou
         payload["current_page"] = current_page
     if pdf_path is not None:
         payload["pdf_path"] = str(pdf_path)
+    if total_pages_target is not None:
+        payload["total_pages_target"] = total_pages_target
+    if start_page is not None:
+        payload["start_page"] = start_page
+    if end_page is not None:
+        payload["end_page"] = end_page
 
     try:
         save_job_status(job_id, payload)
@@ -829,6 +847,9 @@ def retry_failed_pages(
     book_name: str,
     save_job_status,
     saved_count: int,
+    total_pages_target: int,
+    requested_start_page: int | None = None,
+    requested_end_page: int | None = None,
 ) -> tuple[int, list]:
     remaining_failed = []
 
@@ -845,9 +866,13 @@ def retry_failed_pages(
             message=f"Nachladeversuch für Quellseite {source_page_num} ...",
             saved_count=saved_count,
             current_page=source_page_num,
+            total_pages_target=total_pages_target,
+            start_page=requested_start_page,
+            end_page=requested_end_page,
         )
 
         success = False
+        reason = "retry_not_started"
 
         for attempt in range(1, 4):
             log(
@@ -875,6 +900,9 @@ def retry_failed_pages(
                     message=f"Nachgeladen: Seite {local_page_num:04d} (Quelle {source_page_num})",
                     saved_count=saved_count,
                     current_page=source_page_num,
+                    total_pages_target=total_pages_target,
+                    start_page=requested_start_page,
+                    end_page=requested_end_page,
                 )
                 break
 
@@ -891,7 +919,46 @@ def retry_failed_pages(
     return saved_count, remaining_failed
 
 
-def run_download_job(job_id, url, book_name, save_job_status):
+def determine_page_plan(
+    url: str,
+    requested_start_page: int | None = None,
+    requested_end_page: int | None = None,
+) -> dict:
+    url_start_page = get_page_number_from_url(url)
+
+    if requested_start_page is not None:
+        effective_start_page = requested_start_page
+    else:
+        effective_start_page = url_start_page
+
+    if requested_start_page is not None and requested_end_page is not None:
+        if requested_end_page < requested_start_page:
+            requested_start_page, requested_end_page = requested_end_page, requested_start_page
+        total_pages_to_fetch = max(requested_end_page - requested_start_page + 1, 1)
+    elif requested_start_page is not None and requested_end_page is None:
+        total_pages_to_fetch = DEBUG_PAGE_COUNT
+    elif requested_start_page is None and requested_end_page is not None:
+        total_pages_to_fetch = max(requested_end_page, 1)
+    else:
+        total_pages_to_fetch = DEBUG_PAGE_COUNT
+
+    return {
+        "url_start_page": url_start_page,
+        "requested_start_page": requested_start_page,
+        "requested_end_page": requested_end_page,
+        "effective_start_page": effective_start_page,
+        "total_pages_to_fetch": total_pages_to_fetch,
+    }
+
+
+def run_download_job(
+    job_id,
+    url,
+    book_name,
+    save_job_status,
+    start_page=None,
+    end_page=None,
+):
     book_dir = BOOKS_DIR / book_name
     pdf_path = PDF_DIR / f"{book_name}.pdf"
     debug_job_dir = DEBUG_DIR / f"{book_name}_{job_id}"
@@ -900,9 +967,27 @@ def run_download_job(job_id, url, book_name, save_job_status):
     debug_job_dir.mkdir(parents=True, exist_ok=True)
 
     meta = build_initial_meta(url)
-    start_page = get_page_number_from_url(url)
+    page_plan = determine_page_plan(
+        url=url,
+        requested_start_page=start_page,
+        requested_end_page=end_page,
+    )
 
-    log(f"Job gestartet: job_id={job_id} book_name={book_name} start_page={start_page}")
+    url_start_page = page_plan["url_start_page"]
+    requested_start_page = page_plan["requested_start_page"]
+    requested_end_page = page_plan["requested_end_page"]
+    effective_start_page = page_plan["effective_start_page"]
+    total_pages_to_fetch = page_plan["total_pages_to_fetch"]
+
+    log(
+        f"Job gestartet: job_id={job_id} "
+        f"book_name={book_name} "
+        f"url_start_page={url_start_page} "
+        f"requested_start_page={requested_start_page} "
+        f"requested_end_page={requested_end_page} "
+        f"effective_start_page={effective_start_page} "
+        f"total_pages_to_fetch={total_pages_to_fetch}"
+    )
 
     update_status(
         save_job_status=save_job_status,
@@ -911,7 +996,10 @@ def run_download_job(job_id, url, book_name, save_job_status):
         status="running",
         message="Initialisiere Download ...",
         saved_count=0,
-        current_page=start_page,
+        current_page=effective_start_page,
+        total_pages_target=total_pages_to_fetch,
+        start_page=requested_start_page,
+        end_page=requested_end_page,
     )
 
     save_book_metadata(book_dir, meta, url)
@@ -928,7 +1016,10 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 status="running",
                 message="Lese Buch-Metadaten ...",
                 saved_count=0,
-                current_page=start_page,
+                current_page=effective_start_page,
+                total_pages_target=total_pages_to_fetch,
+                start_page=requested_start_page,
+                end_page=requested_end_page,
             )
 
             page.goto(url)
@@ -961,7 +1052,10 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     status="running",
                     message="Buchname wurde automatisch ermittelt.",
                     saved_count=0,
-                    current_page=start_page,
+                    current_page=effective_start_page,
+                    total_pages_target=total_pages_to_fetch,
+                    start_page=requested_start_page,
+                    end_page=requested_end_page,
                 )
             else:
                 if display_name and display_name != old_book_name:
@@ -974,31 +1068,42 @@ def run_download_job(job_id, url, book_name, save_job_status):
                         status="running",
                         message="Buchname wurde automatisch ermittelt.",
                         saved_count=0,
-                        current_page=start_page,
+                        current_page=effective_start_page,
+                        total_pages_target=total_pages_to_fetch,
+                        start_page=requested_start_page,
+                        end_page=requested_end_page,
                     )
                 else:
                     log(f"Jobname unverändert: {book_name}")
 
             save_book_metadata(book_dir, meta, url)
 
-            content_start_page = find_first_content_page(
-                page=page,
-                base_url=url,
-                start_page=start_page,
-                debug_job_dir=debug_job_dir,
-                job_id=job_id,
-                book_name=book_name,
-                save_job_status=save_job_status,
-            )
+            if requested_start_page is not None:
+                content_start_page = requested_start_page
+                log(f"Expliziter Startseitenbereich gesetzt, verwende Startseite {content_start_page}")
+            else:
+                content_start_page = find_first_content_page(
+                    page=page,
+                    base_url=url,
+                    start_page=effective_start_page,
+                    debug_job_dir=debug_job_dir,
+                    job_id=job_id,
+                    book_name=book_name,
+                    save_job_status=save_job_status,
+                )
 
             log(f"Download beginnt ab Inhaltsseite {content_start_page}")
 
             saved_count = 0
             failed_pages = []
 
-            for offset in range(DEBUG_PAGE_COUNT):
+            for offset in range(total_pages_to_fetch):
                 local_page_num = offset + 1
                 source_page_num = content_start_page + offset
+
+                if requested_end_page is not None and source_page_num > requested_end_page:
+                    break
+
                 current_page_url = make_page_url(url, source_page_num)
 
                 update_status(
@@ -1009,6 +1114,9 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     message=f"Lade Quellseite {source_page_num} ...",
                     saved_count=saved_count,
                     current_page=source_page_num,
+                    total_pages_target=total_pages_to_fetch,
+                    start_page=requested_start_page,
+                    end_page=requested_end_page,
                 )
 
                 log(f"Lade Quellseite {source_page_num}: {current_page_url}")
@@ -1032,6 +1140,9 @@ def run_download_job(job_id, url, book_name, save_job_status):
                         message=f"Seite {local_page_num:04d} gespeichert (Quelle {source_page_num})",
                         saved_count=saved_count,
                         current_page=source_page_num,
+                        total_pages_target=total_pages_to_fetch,
+                        start_page=requested_start_page,
+                        end_page=requested_end_page,
                     )
                 else:
                     failed_pages.append({
@@ -1048,6 +1159,9 @@ def run_download_job(job_id, url, book_name, save_job_status):
                         message=f"Quellseite {source_page_num} fehlgeschlagen, wird später erneut versucht.",
                         saved_count=saved_count,
                         current_page=source_page_num,
+                        total_pages_target=total_pages_to_fetch,
+                        start_page=requested_start_page,
+                        end_page=requested_end_page,
                     )
 
                 time.sleep(human_pause())
@@ -1065,6 +1179,9 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     message=f"Starte Nachladeversuche für {len(failed_pages)} Fehlerseiten ...",
                     saved_count=saved_count,
                     current_page=failed_pages[0]["source_page_number"],
+                    total_pages_target=total_pages_to_fetch,
+                    start_page=requested_start_page,
+                    end_page=requested_end_page,
                 )
 
                 saved_count, remaining_failed = retry_failed_pages(
@@ -1076,6 +1193,9 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     book_name=book_name,
                     save_job_status=save_job_status,
                     saved_count=saved_count,
+                    total_pages_target=total_pages_to_fetch,
+                    requested_start_page=requested_start_page,
+                    requested_end_page=requested_end_page,
                 )
 
                 save_json(
@@ -1087,6 +1207,8 @@ def run_download_job(job_id, url, book_name, save_job_status):
                     },
                 )
 
+            last_processed_source_page = content_start_page + max(total_pages_to_fetch - 1, 0)
+
             update_status(
                 save_job_status=save_job_status,
                 job_id=job_id,
@@ -1094,7 +1216,10 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 status="running",
                 message="Erzeuge PDF ...",
                 saved_count=saved_count,
-                current_page=content_start_page + DEBUG_PAGE_COUNT - 1,
+                current_page=last_processed_source_page,
+                total_pages_target=total_pages_to_fetch,
+                start_page=requested_start_page,
+                end_page=requested_end_page,
             )
 
             save_book_metadata(book_dir, meta, url)
@@ -1114,8 +1239,11 @@ def run_download_job(job_id, url, book_name, save_job_status):
                 status="finished",
                 message=finish_message,
                 saved_count=saved_count,
-                current_page=content_start_page + DEBUG_PAGE_COUNT - 1,
+                current_page=last_processed_source_page,
                 pdf_path=pdf_path,
+                total_pages_target=total_pages_to_fetch,
+                start_page=requested_start_page,
+                end_page=requested_end_page,
             )
 
             browser.close()
@@ -1129,7 +1257,10 @@ def run_download_job(job_id, url, book_name, save_job_status):
             status="error",
             message=f"Fehler: {e}",
             saved_count=0,
-            current_page=start_page,
+            current_page=effective_start_page,
+            total_pages_target=total_pages_to_fetch,
+            start_page=requested_start_page,
+            end_page=requested_end_page,
         )
         log(f"Job mit Fehler beendet: {e}")
         raise
