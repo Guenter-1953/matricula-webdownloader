@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Kirchenbuch Downloader</title>
-<link rel="stylesheet" href="/static/style.css?v=16">
+<link rel="stylesheet" href="/static/style.css?v=17">
 <style>
 .job-item {
     position: relative;
@@ -245,7 +245,7 @@
 
                     <div class="job-progress">
                         <span>Seiten: {{ job.pages or job.saved_count or 0 }}</span>
-                        {% if job.current_page %}
+                        {% if job.current_page and job.status not in ["fertig", "fehler", "abgebrochen"] %}
                         <span class="job-current-page">Aktuelle Seite: {{ job.current_page }}</span>
                         {% endif %}
                     </div>
@@ -388,7 +388,7 @@
 
                     <div class="job-progress">
                         <span>Seiten: {{ job.pages or job.saved_count or 0 }}</span>
-                        {% if job.current_page %}
+                        {% if job.current_page and job.status not in ["fertig", "fehler", "abgebrochen"] %}
                         <span class="job-current-page">Aktuelle Seite: {{ job.current_page }}</span>
                         {% endif %}
                     </div>
@@ -510,7 +510,8 @@
             container.innerHTML = jobs.map(function (job) {
                 const status = normalizeStatusClass(job.status);
                 const pages = job.pages ?? job.saved_count ?? 0;
-                const currentPage = job.current_page ? `<span class="job-current-page">Aktuelle Seite: ${escapeHtml(job.current_page)}</span>` : "";
+                const showCurrentPage = !!job.current_page && !["fertig", "fehler", "abgebrochen"].includes(String(job.status || "").toLowerCase());
+                const currentPage = showCurrentPage ? `<span class="job-current-page">Aktuelle Seite: ${escapeHtml(job.current_page)}</span>` : "";
                 const phase = job.phase_label || "-";
                 const runtimeText = job.runtime_text || "-";
                 const avgText = job.avg_seconds_per_page_text || "-";
