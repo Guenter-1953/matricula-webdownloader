@@ -1,6 +1,6 @@
-import os
 import json
-from typing import Optional, Dict, Any
+import os
+from typing import Any, Dict, Optional
 
 from services.book_metadata import enrich_existing_book_json
 from services.page_metadata import build_and_save_page_metadata, page_json_filename_for_image
@@ -31,15 +31,21 @@ def create_page_json_for_page(
     ocr_text: str,
     source_url: Optional[str] = None,
 ) -> Dict[str, Any]:
-
     page_json_name = page_json_filename_for_image(image_file)
     page_json_path = os.path.join(book_folder, page_json_name)
 
+    cleaned_ocr_text = ""
+    if ocr_text:
+        cleaned_ocr_text = " ".join(line.strip() for line in ocr_text.splitlines() if line.strip())
+
     return build_and_save_page_metadata(
         page_number=page_number,
+        source_image=image_path,
         image_file=image_file,
         image_path=image_path,
         ocr_text=ocr_text,
-        output_json_path=page_json_path,
+        cleaned_ocr_text=cleaned_ocr_text,
+        output_path=page_json_path,
         source_url=source_url,
+        status="ok",
     )
