@@ -65,6 +65,87 @@ def build_export_base(source_image: Path) -> str:
     return f"{book_name}__{source_image.stem}"
 
 
+def _normalize_review_question(question: dict) -> dict:
+    return {
+        "field": question.get("field"),
+        "confidence": question.get("confidence"),
+        "reason": question.get("reason"),
+        "question": question.get("question"),
+        "excerpt": question.get("excerpt"),
+        "current_reading": question.get("current_reading"),
+        "alternatives": question.get("alternatives", []) or [],
+    }
+
+
+def extract_analysis_block(item: dict) -> dict:
+    """
+    Holt die neue Analyse-Struktur aus dem Queue-Eintrag, wenn sie dort
+    bereits vorhanden ist.
+
+    Unterstützt zwei Formen:
+    1. item["analysis"] = {...}
+    2. flache Felder direkt im Queue-Eintrag
+    """
+    analysis = item.get("analysis")
+    if not isinstance(analysis, dict):
+        analysis = {}
+
+    raw_text = analysis.get("raw_text", item.get("ocr_text", ""))
+    analysis_text = analysis.get("analysis_text", item.get("cleaned_ocr_text", ""))
+    page_kind = analysis.get("page_kind", item.get("page_kind", "unknown"))
+    page_kind_confidence = analysis.get(
+        "page_kind_confidence",
+        item.get("page_kind_confidence", "offen"),
+    )
+
+    review_questions_raw = analysis.get("review_questions")
+    if not isinstance(review_questions_raw, list):
+        review_questions_raw = item.get("review_questions", []) or []
+
+    review_questions = [
+        _normalize_review_question(question)
+        for question in review_questions_raw
+        if isinstance(question, dict)
+    ]
+
+    notes = analysis.get("notes")
+    if not isinstance(notes, list):
+        notes = item.get("notes", []) or []
+
+    warnings = analysis.get("warnings")
+    if not isinstance(warnings, list):
+        warnings = item.get("warnings", []) or []
+
+    model_version = analysis.get("model_version", item.get("model_version"))
+    created_at = analysis.get("created_at", item.get("analysis_created_at"))
+
+    return {
+        "raw_text": raw_text or "",
+        "analysis_text": analysis_text or "",
+        "page_kind": page_kind or "unknown",
+        "page_kind_confidence": page_kind_confidence or "offen",
+        "review_questions": review_questions,
+        "notes": [str(entry).strip() for entry in notes if str(entry).strip()],
+        "warnings": [str(entry).strip() for entry in warnings if str(entry).strip()],
+        "model_version": model_version,
+        "created_at": created_at,
+    }
+
+
+def build_task_instructions() -> list[str]:
+    return [
+        "Seite vollständig lesen",
+        "alle Einträge erkennen",
+        "Rohtext und bereinigte Lesung unterscheiden",
+        "Namen, Daten, Orte, Berufe, Eltern, Zeugen, Randvermerke erfassen",
+        "Unsicherheiten ausdrücklich benennen",
+        "mögliche Alternativen notieren",
+        "konkrete review_questions formulieren, wenn Namen, Orte oder Daten unsicher sind",
+        "Latein nach Möglichkeit auf Deutsch wiedergeben",
+        "strukturierte Ausgabe erzeugen",
+    ]
+
+
 def prepare_one_item(item: dict) -> dict:
     source_image = Path(item["source_image"])
 
@@ -82,6 +163,8 @@ def prepare_one_item(item: dict) -> dict:
 
     shutil.copy2(source_image, export_image)
 
+    analysis_block = extract_analysis_block(item)
+
     request_payload = {
         "prepared_at": now_iso(),
         "source_image": str(source_image),
@@ -90,14 +173,9 @@ def prepare_one_item(item: dict) -> dict:
         "page_id": source_image.stem,
         "task": {
             "mode": "manual_chatgpt_review",
-            "instructions": [
-                "Seite vollständig lesen",
-                "alle Einträge erkennen",
-                "Namen, Daten, Orte, Berufe, Eltern, Zeugen, Randvermerke erfassen",
-                "Latein nach Möglichkeit auf Deutsch wiedergeben",
-                "strukturierte Ausgabe erzeugen",
-            ],
+            "instructions": build_task_instructions(),
         },
+        "page_analysis_context": analysis_block,
         "reason": item.get("reason", {}),
     }
 
@@ -118,6 +196,9 @@ def prepare_one_item(item: dict) -> dict:
         "export_json": str(export_json),
         "book_name": source_image.parent.name,
         "page_id": source_image.stem,
+        "review_question_count": len(analysis_block.get("review_questions", [])),
+        "page_kind": analysis_block.get("page_kind", "unknown"),
+        "page_kind_confidence": analysis_block.get("page_kind_confidence", "offen"),
     }
 
 
@@ -220,6 +301,18 @@ def main():
             if entry.get("export_json"):
                 print("Info-Datei:")
                 print(entry.get("export_json"))
+
+            if entry.get("page_kind"):
+                print("Seitentyp:")
+                print(entry.get("page_kind"))
+
+            if entry.get("page_kind_confidence"):
+                print("Seitentyp-Sicherheit:")
+                print(entry.get("page_kind_confidence"))
+
+            if "review_question_count" in entry:
+                print("Review-Fragen:")
+                print(entry.get("review_question_count"))
 
 
 if __name__ == "__main__":
