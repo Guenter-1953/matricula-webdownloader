@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+import json
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, Optional
 
 
@@ -67,12 +69,6 @@ class PageKind(str, Enum):
 class ReviewQuestion:
     """
     Einzelne Unsicherheit oder offene Frage zur Seite.
-
-    Beispiele:
-    - Name schwer lesbar
-    - Ortsname mehrdeutig
-    - Datum unklar
-    - Lesart A oder B
     """
 
     field: str
@@ -131,12 +127,6 @@ class ReviewQuestion:
 class PageAnalysis:
     """
     Neue strukturierte Seitenanalyse.
-
-    Ziel:
-    - Rohtext getrennt behalten
-    - bereinigten Analysetext separat speichern
-    - Seitentyp explizit festhalten
-    - Unsicherheiten strukturiert abbilden
     """
 
     raw_text: str = ""
@@ -225,9 +215,6 @@ class PageAnalysis:
 class PageMetadata:
     """
     Metadaten und Analyseergebnis einer einzelnen Seite.
-
-    Diese Hülle ist absichtlich einfach gehalten, damit der Rest des Systems
-    später schrittweise umgestellt werden kann.
     """
 
     page_number: Optional[int] = None
@@ -314,12 +301,6 @@ def build_basic_page_analysis(
     analysis_text: Optional[str] = None,
     model_version: Optional[str] = None,
 ) -> PageAnalysis:
-    """
-    Baut ein minimales Analyseobjekt auf Basis des OCR-/Rohtexts.
-
-    Das ist noch keine volle Fachanalyse, aber ein stabiler Startpunkt
-    für den Umbau.
-    """
     raw_text = raw_text or ""
     normalized_raw = _clean_multiline_text(raw_text) or ""
     normalized_analysis = _clean_inline_text(analysis_text) or _clean_inline_text(raw_text) or ""
@@ -345,13 +326,6 @@ def build_basic_page_analysis(
 
 
 def detect_page_kind(text: str) -> tuple[PageKind, ConfidenceLevel, list[str]]:
-    """
-    Sehr einfache heuristische Erkennung des Seitentyps.
-
-    Wichtig:
-    Diese Funktion ist absichtlich konservativ. Bei Zweifel lieber
-    UNKNOWN oder WAHRSCHEINLICH statt falscher Sicherheit.
-    """
     haystack = (text or "").lower()
     warnings: list[str] = []
 
@@ -373,13 +347,11 @@ def detect_page_kind(text: str) -> tuple[PageKind, ConfidenceLevel, list[str]]:
             "getauft",
             "bapt",
             "paten",
-            "paten",
         ],
     )
     marriage_hits = _count_hits(
         haystack,
         [
-            "trauung",
             "trauung",
             "copul",
             "getraut",
@@ -436,6 +408,88 @@ def detect_page_kind(text: str) -> tuple[PageKind, ConfidenceLevel, list[str]]:
         return PageKind.MIXED, ConfidenceLevel.UNSICHER, warnings
 
     return best_kind, ConfidenceLevel.UNSICHER, warnings
+
+
+def page_json_filename_for_image(source_image: str | Path) -> str:
+    """
+    Kompatibilitätsfunktion für bestehenden Code.
+    """
+    image_path = Path(source_image)
+    return f"{image_path.stem}.json"
+
+
+def build_and_save_page_metadata(*args, **kwargs) -> dict[str, Any]:
+    """
+    Kompatibilitätsfunktion für bestehenden Code.
+
+    Sie akzeptiert bewusst flexible Argumente, damit alter Aufrufcode
+    zunächst weiterläuft, während wir den Rest schrittweise umbauen.
+    """
+    source_image = _extract_source_image(args, kwargs)
+    output_path = _extract_output_path(args, kwargs)
+
+    page_number = kwargs.get("page_number")
+    ocr_text = kwargs.get("ocr_text", "") or ""
+    cleaned_ocr_text = kwargs.get("cleaned_ocr_text", "") or ""
+    status = kwargs.get("status", "ok") or "ok"
+    model_version = kwargs.get("model_version")
+
+    analysis_input_text = cleaned_ocr_text or ocr_text
+    analysis = build_basic_page_analysis(
+        raw_text=ocr_text,
+        analysis_text=analysis_input_text,
+        model_version=model_version,
+    )
+
+    metadata = PageMetadata(
+        page_number=page_number if isinstance(page_number, int) else None,
+        source_image=str(source_image) if source_image else None,
+        ocr_text=ocr_text,
+        cleaned_ocr_text=cleaned_ocr_text,
+        analysis=analysis,
+        status=str(status),
+    ).normalized()
+
+    data = metadata.to_dict()
+
+    if output_path is None and source_image is not None:
+        output_path = Path(source_image).with_name(page_json_filename_for_image(source_image))
+
+    if output_path is not None:
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    return data
+
+
+def _extract_source_image(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Optional[Path]:
+    for key in ["source_image", "image_path", "page_image", "image_file"]:
+        value = kwargs.get(key)
+        if value:
+            return Path(value)
+
+    if args:
+        first = args[0]
+        if isinstance(first, (str, Path)):
+            return Path(first)
+
+    return None
+
+
+def _extract_output_path(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Optional[Path]:
+    for key in ["output_path", "json_path", "target_path", "metadata_path"]:
+        value = kwargs.get(key)
+        if value:
+            return Path(value)
+
+    if len(args) >= 2 and isinstance(args[1], (str, Path)):
+        return Path(args[1])
+
+    return None
 
 
 def _contains_any(text: str, patterns: list[str]) -> bool:
