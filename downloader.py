@@ -330,6 +330,48 @@ def enrich_meta_from_dom(meta: dict, dom_candidates: dict) -> dict:
     return meta
 
 
+def improve_book_meta_from_title(meta: dict) -> dict:
+    text = meta.get("dom_title_text", "") or ""
+    page_title = normalize_whitespace(text)
+
+    match_place = re.search(r"Pfarre/Ort\s+([^|]+)", page_title, re.IGNORECASE)
+    if match_place:
+        place_value = normalize_whitespace(match_place.group(1))
+        if place_value:
+            meta["pfarre_ort"] = place_value
+
+    match_type = re.search(r"Buchtyp\s+([^|]+)", page_title, re.IGNORECASE)
+    if match_type:
+        type_value = normalize_whitespace(match_type.group(1))
+        if type_value:
+            meta["buchtyp"] = type_value
+
+    match_from = re.search(r"Datum von\s+.*?(\d{4})", page_title, re.IGNORECASE)
+    match_to = re.search(r"Datum bis\s+.*?(\d{4})", page_title, re.IGNORECASE)
+
+    if match_from:
+        meta["datum_von"] = match_from.group(1)
+    if match_to:
+        meta["datum_bis"] = match_to.group(1)
+
+    if normalize_compare_value(meta.get("pfarre_ort")) in {"de_ful3_jdw", "unbekannt"}:
+        alt_place = re.search(r"\|\s*([^|]+)\s*\|\s*fulda,\s*r\.k\.\s*bistum", page_title, re.IGNORECASE)
+        if alt_place:
+            alt_place_value = normalize_whitespace(alt_place.group(1))
+            if alt_place_value:
+                meta["pfarre_ort"] = alt_place_value
+
+    if normalize_compare_value(meta.get("bistum")) in {"fulda", "unbekannt"}:
+        match_bistum = re.search(r"\|\s*([^|]+bistum)\s*\|", page_title, re.IGNORECASE)
+        if match_bistum:
+            bistum_value = normalize_whitespace(match_bistum.group(1))
+            if bistum_value:
+                meta["bistum"] = bistum_value
+
+    log(f"Verbesserte Metadaten aus Titelseite: {meta}")
+    return meta
+
+
 def save_book_metadata(book_dir: Path, meta: dict, source_url: str):
     data = {
         "country": meta.get("country"),
@@ -1157,6 +1199,7 @@ def run_download_job(
             )
 
             meta = enrich_meta_from_dom(meta, dom_candidates)
+            meta = improve_book_meta_from_title(meta)
 
             book_dir, attached_book_name, attached_pdf_path, attached = maybe_attach_to_existing_book(
                 book_dir=book_dir,
