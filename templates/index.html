@@ -158,14 +158,22 @@
 
 .page-range-row {
     display: flex;
-    gap: 16px;
+    justify-content: flex-start;
+    align-items: flex-end;
+    gap: 20px;
     flex-wrap: wrap;
     margin-top: 8px;
 }
 
 .page-range-field {
-    flex: 1 1 180px;
-    min-width: 180px;
+    flex: 0 0 auto;
+    min-width: 220px;
+}
+
+.page-range-field input {
+    width: 220px;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 .page-range-hint {
