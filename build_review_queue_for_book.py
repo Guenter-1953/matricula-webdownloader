@@ -5,7 +5,6 @@ from pathlib import Path
 from review_queue import add_page
 
 
-MIN_CONFIDENCE_REQUIRED = 55.0
 MIN_TEXT_LENGTH_REQUIRED = 300
 
 
@@ -16,50 +15,30 @@ def load_json(path: Path) -> dict:
         return {}
 
 
-def extract_ocr_values(page_data: dict) -> tuple[float | None, int | None]:
-    confidence = None
-    text_length = None
+def should_add_to_review(page_data: dict) -> tuple[bool, dict]:
+    needs_ai = page_data.get("needs_ai_review", False)
+    text_length = page_data.get("ocr_char_count")
 
-    ocr = page_data.get("ocr", {})
-    if isinstance(ocr, dict):
-        raw_conf = ocr.get("confidence")
-        raw_text = ocr.get("text")
+    reason = {
+        "needs_ai_review": needs_ai,
+        "ocr_char_count": text_length,
+        "min_text_length_required": MIN_TEXT_LENGTH_REQUIRED,
+    }
 
-        try:
-            if raw_conf is not None:
-                confidence = float(raw_conf)
-        except Exception:
-            confidence = None
-
-        if isinstance(raw_text, str):
-            text_length = len(raw_text.strip())
+    if needs_ai:
+        return True, reason
 
     if text_length is None:
-        raw_text_top = page_data.get("ocr_text")
-        if isinstance(raw_text_top, str):
-            text_length = len(raw_text_top.strip())
+        return True, reason
 
-    return confidence, text_length
-
-
-def should_add_to_review(confidence: float | None, text_length: int | None) -> bool:
-    if confidence is None:
-        return True
-    if confidence < MIN_CONFIDENCE_REQUIRED:
-        return True
-    if text_length is None:
-        return True
     if text_length < MIN_TEXT_LENGTH_REQUIRED:
-        return True
-    return False
+        return True, reason
+
+    return False, reason
 
 
 def find_page_json_files(book_dir: Path) -> list[Path]:
-    files = []
-    for path in sorted(book_dir.glob("page_*.json")):
-        if path.is_file():
-            files.append(path)
-    return files
+    return sorted(book_dir.glob("page_*.json"))
 
 
 def build_review_queue_for_book(book_dir: Path) -> dict:
@@ -69,13 +48,10 @@ def build_review_queue_for_book(book_dir: Path) -> dict:
     added_count = 0
     already_present_count = 0
     skipped_count = 0
-    results = []
 
     for page_file in page_files:
         checked_count += 1
         page_data = load_json(page_file)
-
-        confidence, text_length = extract_ocr_values(page_data)
 
         image_path = page_data.get("image_path")
         if not image_path:
@@ -85,47 +61,20 @@ def build_review_queue_for_book(book_dir: Path) -> dict:
 
         if not image_path:
             skipped_count += 1
-            results.append({
-                "page_json": str(page_file),
-                "status": "skipped_missing_image_path",
-            })
             continue
 
-        if not should_add_to_review(confidence, text_length):
+        should_add, reason = should_add_to_review(page_data)
+
+        if not should_add:
             skipped_count += 1
-            results.append({
-                "page_json": str(page_file),
-                "source_image": image_path,
-                "status": "skipped_good_enough",
-                "reason": {
-                    "min_confidence_required": MIN_CONFIDENCE_REQUIRED,
-                    "min_text_length_required": MIN_TEXT_LENGTH_REQUIRED,
-                    "actual_confidence": confidence,
-                    "actual_text_length": text_length,
-                },
-            })
             continue
 
-        reason = {
-            "min_confidence_required": MIN_CONFIDENCE_REQUIRED,
-            "min_text_length_required": MIN_TEXT_LENGTH_REQUIRED,
-            "actual_confidence": confidence,
-            "actual_text_length": text_length,
-        }
+        result = add_page(image_path=image_path, reason=reason)
 
-        queue_result = add_page(image_path=image_path, reason=reason)
-
-        if queue_result["status"] == "added":
+        if result["status"] == "added":
             added_count += 1
         else:
             already_present_count += 1
-
-        results.append({
-            "page_json": str(page_file),
-            "source_image": image_path,
-            "status": queue_result["status"],
-            "reason": reason,
-        })
 
     return {
         "book_dir": str(book_dir),
@@ -133,7 +82,6 @@ def build_review_queue_for_book(book_dir: Path) -> dict:
         "added_to_queue": added_count,
         "already_present": already_present_count,
         "skipped": skipped_count,
-        "results": results,
     }
 
 
