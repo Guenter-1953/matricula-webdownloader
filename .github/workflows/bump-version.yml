@@ -1,24 +1,16 @@
-name: Bump Version
+name: bump-version
 
 on:
-  push:
-    branches:
-      - main
-      - master
+  workflow_dispatch:
 
 jobs:
   bump-version:
-    if: github.actor != 'github-actions[bot]'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
 
     steps:
       - name: Repository auschecken
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Python einrichten
         uses: actions/setup-python@v5
@@ -26,12 +18,22 @@ jobs:
           python-version: "3.11"
 
       - name: Version erhöhen
-        run: python utils/bump_version.py
+        run: |
+          if [ -f utils/bump_version.py ]; then
+            python utils/bump_version.py
+          else
+            echo "utils/bump_version.py nicht gefunden - Workflow wird übersprungen."
+          fi
 
       - name: Änderungen committen
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add version.json
-          git diff --cached --quiet || git commit -m "Bump version [skip ci]"
-          git push
+
+          if git diff --quiet; then
+            echo "Keine Änderungen zum Committen."
+          else
+            git add .
+            git commit -m "Bump Version"
+            git push
+          fi
