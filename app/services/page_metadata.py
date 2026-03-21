@@ -1,12 +1,13 @@
-import os
-import re
-import json
-from dataclasses import dataclass, asdict, field
-from typing import Optional, List, Dict, Any
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Optional
 
 
 MIN_OCR_CHAR_COUNT = 300
-MIN_RECORD_TYPE_CONFIDENCE = 0.60
+
 
 SERVICE_UNAVAILABLE_PATTERNS = [
     "service unavailable",
@@ -16,346 +17,477 @@ SERVICE_UNAVAILABLE_PATTERNS = [
 ]
 
 TITLE_PAGE_PATTERNS = [
-    "kontakt pfarre",
-    "buchtyp",
-    "datum von",
-    "datum bis",
     "matricula online",
-    "signatur",
+    "bestände",
+    "landkarte",
+    "ortssuche",
+    "matricula unterstützen",
+    "startseite",
+    "kirchenbuch",
 ]
 
-NOISE_LINE_PATTERNS = [
-    r"\bkontakt\s+pfarre/?ort\b",
-    r"\bsignatur\b",
-    r"\bbuchtyp\b",
-    r"\bdatum\s+von\b",
-    r"\bdatum\s+bis\b",
-    r"\bmatricula\s+online\b",
-    r"\bstartseite\b",
-    r"\bdeutschland\b",
-    r"\bfulda\b",
+REGISTER_HINT_PATTERNS = [
+    "getauft",
+    "taufe",
+    "taufen",
+    "copuliert",
+    "copulation",
+    "getraut",
+    "trauung",
+    "begraben",
+    "beerdigt",
+    "gestorben",
+    "verstorben",
+    "index",
+    "register",
+    "alphabetisch",
 ]
 
-NOISE_TOKEN_PATTERNS = [
-    r"\b\d{2}-einband-\d{4}\b",
-    r"\b\d{2}-titel-\d{4}\b",
-    r"\b\d{2}-(?:tod|taufe|trauung|firmung|copulationen|konfirmationen)-\d{4}\b",
-    r"\b\d{2}-(?:tod|taufe|trauung)-\d{4}\b",
-    r"\bpage[_\-]?\d+\b",
-]
 
-STOPWORD_NAMES = {
-    "Matricula Online",
-    "Deutschland Fulda",
-    "Startseite Deutschland",
-    "Kirchenbuch Taufe",
-    "Kirchenbuch Trauung",
-    "Kirchenbuch Tod",
-    "Kontakt Pfarre",
-    "Ort Signatur",
-    "Buchtyp Kirchenbuch",
-    "Datum Von",
-    "Datum Bis",
-    "Pfarre Ort",
-    "Buchtyp Kirchent",
-    "Janua Datum",
-    "Service Unavailable The",
-}
+class ConfidenceLevel(str, Enum):
+    SICHER = "sicher"
+    WAHRSCHEINLICH = "wahrscheinlich"
+    UNSICHER = "unsicher"
+    OFFEN = "offen"
 
 
-@dataclass
-class PageMetadata:
-    schema_version: int
-    page_number: int
-    image_file: str
-    image_path: str
-    source_url: Optional[str]
-    ocr_text: str
-    ocr_char_count: int
-    likely_record_type: Optional[str]
-    record_type_confidence: float
-    years_found: List[int] = field(default_factory=list)
-    earliest_year: Optional[int] = None
-    latest_year: Optional[int] = None
-    candidate_names: List[str] = field(default_factory=list)
-    needs_ai_review: bool = True
-    notes: List[str] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+class PageKind(str, Enum):
+    TITLE_PAGE = "title_page"
+    BAPTISM = "baptism"
+    MARRIAGE = "marriage"
+    BURIAL = "burial"
+    INDEX = "index"
+    REGISTER = "register"
+    MIXED = "mixed"
+    UNKNOWN = "unknown"
+    OTHER = "other"
 
 
-def normalize_ocr_text(text: str) -> str:
-    text = text or ""
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+@dataclass(slots=True)
+class ReviewQuestion:
+    """
+    Einzelne Unsicherheit oder offene Frage zur Seite.
 
+    Beispiele:
+    - Name schwer lesbar
+    - Ortsname mehrdeutig
+    - Datum unklar
+    - Lesart A oder B
+    """
 
-def contains_service_unavailable_text(text: str) -> bool:
-    lower = (text or "").lower()
-    return any(pattern in lower for pattern in SERVICE_UNAVAILABLE_PATTERNS)
+    field: str
+    confidence: ConfidenceLevel
+    reason: str
+    question: str
+    excerpt: Optional[str] = None
+    current_reading: Optional[str] = None
+    alternatives: list[str] = field(default_factory=list)
 
-
-def remove_service_unavailable_blocks(text: str) -> str:
-    if not text:
-        return ""
-
-    if not contains_service_unavailable_text(text):
-        return text
-
-    lines = [line.strip() for line in text.splitlines()]
-    kept_lines = []
-
-    for line in lines:
-        lower = line.lower()
-        if any(pattern in lower for pattern in SERVICE_UNAVAILABLE_PATTERNS):
-            continue
-        kept_lines.append(line)
-
-    return "\n".join(kept_lines).strip()
-
-
-def strip_noise_tokens(text: str) -> str:
-    cleaned = text or ""
-
-    for pattern in NOISE_TOKEN_PATTERNS:
-        cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
-
-    cleaned = re.sub(r"\b\d{2}-[A-Za-zÄÖÜäöüß]+-\d{4}\b", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\[\s*\d+\s*\]", " ", cleaned)
-    cleaned = re.sub(r"\b(?:kontakt|pfarre|ort|signatur|buchtyp|datum)\b(?=\s*[:/])", " ", cleaned, flags=re.IGNORECASE)
-
-    return cleaned
-
-
-def remove_noise_lines(text: str) -> str:
-    if not text:
-        return ""
-
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    kept_lines: List[str] = []
-
-    for line in lines:
-        lower = line.lower()
-
-        noise_hits = sum(1 for pattern in NOISE_LINE_PATTERNS if re.search(pattern, lower, flags=re.IGNORECASE))
-        token_hits = len(re.findall(r"\b\d{2}-[A-Za-zÄÖÜäöüß]+-\d{4}\b", line, flags=re.IGNORECASE))
-
-        if noise_hits >= 2:
-            continue
-
-        if token_hits >= 3:
-            continue
-
-        kept_lines.append(line)
-
-    return "\n".join(kept_lines).strip()
-
-
-def build_analysis_text(text: str) -> str:
-    cleaned = normalize_ocr_text(text)
-    cleaned = remove_service_unavailable_blocks(cleaned)
-    cleaned = strip_noise_tokens(cleaned)
-    cleaned = remove_noise_lines(cleaned)
-    cleaned = normalize_ocr_text(cleaned)
-
-    cleaned = re.sub(r"\b\d{1,2}\s*\.\s*(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\b", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"[|]{2,}", " ", cleaned)
-    cleaned = re.sub(r"[_]{2,}", " ", cleaned)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned)
-
-    return cleaned.strip()
-
-
-def detect_record_type(text: str) -> tuple[Optional[str], float]:
-    lower = (text or "").lower()
-
-    scores = {
-        "taufe": 0,
-        "trauung": 0,
-        "tod": 0,
-    }
-
-    for pattern in [r"\btauf", r"\bbapt", r"\bgeburt"]:
-        scores["taufe"] += len(re.findall(pattern, lower, flags=re.IGNORECASE))
-
-    for pattern in [r"\btrau", r"\bheirat", r"\behe", r"\bmatrimon", r"\bcopulat"]:
-        scores["trauung"] += len(re.findall(pattern, lower, flags=re.IGNORECASE))
-
-    for pattern in [r"\btod", r"\bsterb", r"\bbegr", r"\bmortu", r"\bdefunct", r"\bsepult"]:
-        scores["tod"] += len(re.findall(pattern, lower, flags=re.IGNORECASE))
-
-    best_type = None
-    best_score = 0
-
-    for key, value in scores.items():
-        if value > best_score:
-            best_type = key
-            best_score = value
-
-    total = sum(scores.values())
-    confidence = round(best_score / total, 3) if total > 0 else 0.0
-
-    return best_type, confidence
-
-
-def extract_years(text: str) -> List[int]:
-    years = sorted({int(y) for y in re.findall(r"\b(1[5-9]\d{2}|20\d{2})\b", text or "")})
-
-    plausible_years = [y for y in years if 1500 <= y <= 1899]
-    return plausible_years
-
-
-def extract_candidate_names(text: str, limit: int = 30) -> List[str]:
-    pattern = r"\b([A-ZÄÖÜ][a-zäöüß]{2,}(?:\s+[A-ZÄÖÜ][a-zäöüß]{2,}){1,3})\b"
-    matches = re.findall(pattern, text or "")
-
-    result = []
-    seen = set()
-
-    for match in matches:
-        name = match.strip()
-
-        if name in STOPWORD_NAMES:
-            continue
-        if len(name) > 60:
-            continue
-        if re.search(r"\b(?:Datum|Buchtyp|Signatur|Pfarre|Ort|Kontakt|Service|Unavailable)\b", name, flags=re.IGNORECASE):
-            continue
-        if re.search(r"\d", name):
-            continue
-
-        if name not in seen:
-            seen.add(name)
-            result.append(name)
-
-    return result[:limit]
-
-
-def looks_like_title_page(text: str) -> bool:
-    lower = (text or "").lower()
-    hits = sum(1 for pattern in TITLE_PAGE_PATTERNS if pattern in lower)
-    return hits >= 2
-
-
-def determine_needs_ai_review(
-    original_text: str,
-    normalized_text: str,
-    analysis_text: str,
-    record_type: Optional[str],
-    record_confidence: float,
-    years: List[int],
-    candidate_names: List[str],
-) -> tuple[bool, List[str]]:
-    review_reasons: List[str] = []
-
-    if not normalized_text:
-        review_reasons.append("Kein OCR-Text vorhanden.")
-
-    if contains_service_unavailable_text(original_text):
-        review_reasons.append("Server-Fehlertext im OCR erkannt.")
-
-    if len(analysis_text) < MIN_OCR_CHAR_COUNT:
-        review_reasons.append(f"OCR-Text zu kurz (< {MIN_OCR_CHAR_COUNT} Zeichen).")
-
-    if looks_like_title_page(normalized_text):
-        review_reasons.append("Titel-/Indexseite erkannt.")
-
-    if not record_type:
-        review_reasons.append("Seitentyp konnte nicht erkannt werden.")
-    elif record_confidence < MIN_RECORD_TYPE_CONFIDENCE:
-        review_reasons.append(
-            f"Seitentyp unsicher erkannt (Confidence < {MIN_RECORD_TYPE_CONFIDENCE:.2f})."
+    def normalized(self) -> "ReviewQuestion":
+        return ReviewQuestion(
+            field=_clean_inline_text(self.field) or "",
+            confidence=self.confidence,
+            reason=_clean_inline_text(self.reason) or "",
+            question=_clean_inline_text(self.question) or "",
+            excerpt=_clean_multiline_text(self.excerpt),
+            current_reading=_clean_inline_text(self.current_reading),
+            alternatives=[
+                cleaned
+                for cleaned in (_clean_inline_text(item) for item in self.alternatives)
+                if cleaned
+            ],
         )
 
-    if not years and not candidate_names:
-        review_reasons.append("Weder Jahreszahlen noch Namenskandidaten erkannt.")
+    def to_dict(self) -> dict[str, Any]:
+        item = self.normalized()
+        return {
+            "field": item.field,
+            "confidence": item.confidence.value,
+            "reason": item.reason,
+            "question": item.question,
+            "excerpt": item.excerpt,
+            "current_reading": item.current_reading,
+            "alternatives": item.alternatives,
+        }
 
-    needs_review = len(review_reasons) > 0
-    return needs_review, review_reasons
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ReviewQuestion":
+        return cls(
+            field=str(data.get("field", "") or ""),
+            confidence=parse_confidence(data.get("confidence")),
+            reason=str(data.get("reason", "") or ""),
+            question=str(data.get("question", "") or ""),
+            excerpt=_none_if_blank(data.get("excerpt")),
+            current_reading=_none_if_blank(data.get("current_reading")),
+            alternatives=[
+                str(item).strip()
+                for item in (data.get("alternatives", []) or [])
+                if str(item).strip()
+            ],
+        ).normalized()
 
 
-def build_page_metadata(
-    page_number: int,
-    image_file: str,
-    image_path: str,
-    ocr_text: str,
-    source_url: Optional[str] = None,
-) -> PageMetadata:
-    normalized = normalize_ocr_text(ocr_text)
-    analysis_text = build_analysis_text(normalized)
+@dataclass(slots=True)
+class PageAnalysis:
+    """
+    Neue strukturierte Seitenanalyse.
 
-    record_type, record_confidence = detect_record_type(analysis_text)
-    years = extract_years(analysis_text)
-    candidate_names = extract_candidate_names(analysis_text)
+    Ziel:
+    - Rohtext getrennt behalten
+    - bereinigten Analysetext separat speichern
+    - Seitentyp explizit festhalten
+    - Unsicherheiten strukturiert abbilden
+    """
 
-    needs_ai_review, review_reasons = determine_needs_ai_review(
-        original_text=ocr_text or "",
-        normalized_text=normalized,
-        analysis_text=analysis_text,
-        record_type=record_type,
-        record_confidence=record_confidence,
-        years=years,
-        candidate_names=candidate_names,
+    raw_text: str = ""
+    analysis_text: str = ""
+    page_kind: PageKind = PageKind.UNKNOWN
+    page_kind_confidence: ConfidenceLevel = ConfidenceLevel.OFFEN
+    review_questions: list[ReviewQuestion] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    model_version: Optional[str] = None
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def normalized(self) -> "PageAnalysis":
+        return PageAnalysis(
+            raw_text=_clean_multiline_text(self.raw_text) or "",
+            analysis_text=_clean_inline_text(self.analysis_text) or "",
+            page_kind=self.page_kind,
+            page_kind_confidence=self.page_kind_confidence,
+            review_questions=[item.normalized() for item in self.review_questions],
+            notes=[
+                cleaned
+                for cleaned in (_clean_inline_text(item) for item in self.notes)
+                if cleaned
+            ],
+            warnings=[
+                cleaned
+                for cleaned in (_clean_inline_text(item) for item in self.warnings)
+                if cleaned
+            ],
+            model_version=_clean_inline_text(self.model_version),
+            created_at=str(self.created_at or datetime.now(timezone.utc).isoformat()),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        item = self.normalized()
+        return {
+            "raw_text": item.raw_text,
+            "analysis_text": item.analysis_text,
+            "page_kind": item.page_kind.value,
+            "page_kind_confidence": item.page_kind_confidence.value,
+            "review_questions": [question.to_dict() for question in item.review_questions],
+            "notes": item.notes,
+            "warnings": item.warnings,
+            "model_version": item.model_version,
+            "created_at": item.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PageAnalysis":
+        return cls(
+            raw_text=str(data.get("raw_text", "") or ""),
+            analysis_text=str(data.get("analysis_text", "") or ""),
+            page_kind=parse_page_kind(data.get("page_kind")),
+            page_kind_confidence=parse_confidence(data.get("page_kind_confidence")),
+            review_questions=[
+                ReviewQuestion.from_dict(item)
+                for item in (data.get("review_questions", []) or [])
+                if isinstance(item, dict)
+            ],
+            notes=[
+                str(item).strip()
+                for item in (data.get("notes", []) or [])
+                if str(item).strip()
+            ],
+            warnings=[
+                str(item).strip()
+                for item in (data.get("warnings", []) or [])
+                if str(item).strip()
+            ],
+            model_version=_none_if_blank(data.get("model_version")),
+            created_at=str(data.get("created_at") or datetime.now(timezone.utc).isoformat()),
+        ).normalized()
+
+    @classmethod
+    def empty(cls) -> "PageAnalysis":
+        return cls()
+
+    def has_open_review_points(self) -> bool:
+        return any(
+            question.confidence in {ConfidenceLevel.UNSICHER, ConfidenceLevel.OFFEN}
+            for question in self.review_questions
+        )
+
+
+@dataclass(slots=True)
+class PageMetadata:
+    """
+    Metadaten und Analyseergebnis einer einzelnen Seite.
+
+    Diese Hülle ist absichtlich einfach gehalten, damit der Rest des Systems
+    später schrittweise umgestellt werden kann.
+    """
+
+    page_number: Optional[int] = None
+    source_image: Optional[str] = None
+    ocr_text: str = ""
+    cleaned_ocr_text: str = ""
+    analysis: PageAnalysis = field(default_factory=PageAnalysis.empty)
+    status: str = "ok"
+
+    def normalized(self) -> "PageMetadata":
+        return PageMetadata(
+            page_number=self.page_number,
+            source_image=_none_if_blank(self.source_image),
+            ocr_text=_clean_multiline_text(self.ocr_text) or "",
+            cleaned_ocr_text=_clean_inline_text(self.cleaned_ocr_text) or "",
+            analysis=self.analysis.normalized(),
+            status=_clean_inline_text(self.status) or "ok",
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        item = self.normalized()
+        return {
+            "page_number": item.page_number,
+            "source_image": item.source_image,
+            "ocr_text": item.ocr_text,
+            "cleaned_ocr_text": item.cleaned_ocr_text,
+            "analysis": item.analysis.to_dict(),
+            "status": item.status,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PageMetadata":
+        analysis_data = data.get("analysis")
+        if not isinstance(analysis_data, dict):
+            analysis_data = {}
+
+        return cls(
+            page_number=data.get("page_number"),
+            source_image=_none_if_blank(data.get("source_image")),
+            ocr_text=str(data.get("ocr_text", "") or ""),
+            cleaned_ocr_text=str(data.get("cleaned_ocr_text", "") or ""),
+            analysis=PageAnalysis.from_dict(analysis_data),
+            status=str(data.get("status", "ok") or "ok"),
+        ).normalized()
+
+
+def parse_confidence(value: Any) -> ConfidenceLevel:
+    if isinstance(value, ConfidenceLevel):
+        return value
+
+    text = str(value or "").strip().lower()
+
+    mapping = {
+        "sicher": ConfidenceLevel.SICHER,
+        "wahrscheinlich": ConfidenceLevel.WAHRSCHEINLICH,
+        "unsicher": ConfidenceLevel.UNSICHER,
+        "offen": ConfidenceLevel.OFFEN,
+    }
+    return mapping.get(text, ConfidenceLevel.OFFEN)
+
+
+def parse_page_kind(value: Any) -> PageKind:
+    if isinstance(value, PageKind):
+        return value
+
+    text = str(value or "").strip().lower()
+
+    mapping = {
+        "title_page": PageKind.TITLE_PAGE,
+        "baptism": PageKind.BAPTISM,
+        "marriage": PageKind.MARRIAGE,
+        "burial": PageKind.BURIAL,
+        "index": PageKind.INDEX,
+        "register": PageKind.REGISTER,
+        "mixed": PageKind.MIXED,
+        "unknown": PageKind.UNKNOWN,
+        "other": PageKind.OTHER,
+    }
+    return mapping.get(text, PageKind.UNKNOWN)
+
+
+def build_basic_page_analysis(
+    raw_text: str,
+    analysis_text: Optional[str] = None,
+    model_version: Optional[str] = None,
+) -> PageAnalysis:
+    """
+    Baut ein minimales Analyseobjekt auf Basis des OCR-/Rohtexts.
+
+    Das ist noch keine volle Fachanalyse, aber ein stabiler Startpunkt
+    für den Umbau.
+    """
+    raw_text = raw_text or ""
+    normalized_raw = _clean_multiline_text(raw_text) or ""
+    normalized_analysis = _clean_inline_text(analysis_text) or _clean_inline_text(raw_text) or ""
+
+    page_kind, confidence, warnings = detect_page_kind(normalized_raw)
+
+    notes: list[str] = []
+    if len(normalized_raw) < MIN_OCR_CHAR_COUNT:
+        warnings.append(
+            f"OCR/Rohtext ist kurz ({len(normalized_raw)} Zeichen) und kann unvollständig sein."
+        )
+
+    return PageAnalysis(
+        raw_text=normalized_raw,
+        analysis_text=normalized_analysis,
+        page_kind=page_kind,
+        page_kind_confidence=confidence,
+        review_questions=[],
+        notes=notes,
+        warnings=_unique_preserve_order(warnings),
+        model_version=_none_if_blank(model_version),
+    ).normalized()
+
+
+def detect_page_kind(text: str) -> tuple[PageKind, ConfidenceLevel, list[str]]:
+    """
+    Sehr einfache heuristische Erkennung des Seitentyps.
+
+    Wichtig:
+    Diese Funktion ist absichtlich konservativ. Bei Zweifel lieber
+    UNKNOWN oder WAHRSCHEINLICH statt falscher Sicherheit.
+    """
+    haystack = (text or "").lower()
+    warnings: list[str] = []
+
+    if not haystack.strip():
+        return PageKind.UNKNOWN, ConfidenceLevel.OFFEN, ["Kein Text für Seitentyp-Erkennung vorhanden."]
+
+    if _contains_any(haystack, SERVICE_UNAVAILABLE_PATTERNS):
+        warnings.append("Seite enthält Hinweise auf Service-Unavailable oder technische Störung.")
+        return PageKind.OTHER, ConfidenceLevel.OFFEN, warnings
+
+    if _contains_any(haystack, TITLE_PAGE_PATTERNS):
+        return PageKind.TITLE_PAGE, ConfidenceLevel.WAHRSCHEINLICH, warnings
+
+    baptism_hits = _count_hits(
+        haystack,
+        [
+            "taufe",
+            "taufen",
+            "getauft",
+            "bapt",
+            "paten",
+            "paten",
+        ],
+    )
+    marriage_hits = _count_hits(
+        haystack,
+        [
+            "trauung",
+            "trauung",
+            "copul",
+            "getraut",
+            "ehe",
+            "braut",
+            "bräutigam",
+        ],
+    )
+    burial_hits = _count_hits(
+        haystack,
+        [
+            "begraben",
+            "beerdigt",
+            "gestorben",
+            "verstorben",
+            "tod",
+            "sterbe",
+        ],
+    )
+    index_hits = _count_hits(
+        haystack,
+        [
+            "index",
+            "register",
+            "alphabet",
+            "verzeichnis",
+        ],
     )
 
-    notes: List[str] = list(review_reasons)
+    scores: list[tuple[PageKind, int]] = [
+        (PageKind.BAPTISM, baptism_hits),
+        (PageKind.MARRIAGE, marriage_hits),
+        (PageKind.BURIAL, burial_hits),
+        (PageKind.INDEX, index_hits),
+    ]
+    scores.sort(key=lambda item: item[1], reverse=True)
 
-    if not years:
-        notes.append("Keine Jahreszahl erkannt.")
-    if not candidate_names:
-        notes.append("Keine Namenskandidaten erkannt.")
+    best_kind, best_score = scores[0]
+    second_score = scores[1][1]
 
-    unique_notes: List[str] = []
-    for note in notes:
-        if note not in unique_notes:
-            unique_notes.append(note)
+    if best_score <= 0:
+        if _contains_any(haystack, REGISTER_HINT_PATTERNS):
+            return PageKind.REGISTER, ConfidenceLevel.UNSICHER, warnings
+        return PageKind.UNKNOWN, ConfidenceLevel.OFFEN, warnings
 
-    return PageMetadata(
-        schema_version=1,
-        page_number=page_number,
-        image_file=image_file,
-        image_path=image_path,
-        source_url=source_url,
-        ocr_text=normalized,
-        ocr_char_count=len(analysis_text),
-        likely_record_type=record_type,
-        record_type_confidence=record_confidence,
-        years_found=years,
-        earliest_year=years[0] if years else None,
-        latest_year=years[-1] if years else None,
-        candidate_names=candidate_names,
-        needs_ai_review=needs_ai_review,
-        notes=unique_notes,
-    )
+    if best_score >= 3 and second_score == 0:
+        return best_kind, ConfidenceLevel.SICHER, warnings
+
+    if best_score >= 2 and second_score <= 1:
+        return best_kind, ConfidenceLevel.WAHRSCHEINLICH, warnings
+
+    if best_score >= 1 and second_score >= 1:
+        warnings.append("Mehrere Seitentypen gleichzeitig wahrscheinlich; Seite könnte gemischt sein.")
+        return PageKind.MIXED, ConfidenceLevel.UNSICHER, warnings
+
+    return best_kind, ConfidenceLevel.UNSICHER, warnings
 
 
-def page_json_filename_for_image(image_file: str) -> str:
-    base, _ = os.path.splitext(image_file)
-    return f"{base}.json"
+def _contains_any(text: str, patterns: list[str]) -> bool:
+    return any(pattern in text for pattern in patterns)
 
 
-def save_page_metadata_json(output_path: str, metadata: PageMetadata) -> None:
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(metadata.to_dict(), f, ensure_ascii=False, indent=2)
+def _count_hits(text: str, patterns: list[str]) -> int:
+    return sum(1 for pattern in patterns if pattern in text)
 
 
-def build_and_save_page_metadata(
-    page_number: int,
-    image_file: str,
-    image_path: str,
-    ocr_text: str,
-    output_json_path: str,
-    source_url: Optional[str] = None,
-) -> Dict[str, Any]:
-    metadata = build_page_metadata(
-        page_number=page_number,
-        image_file=image_file,
-        image_path=image_path,
-        ocr_text=ocr_text,
-        source_url=source_url,
-    )
-    save_page_metadata_json(output_path=output_json_path, metadata=metadata)
-    return metadata.to_dict()
+def _unique_preserve_order(items: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+
+    for item in items:
+        cleaned = _clean_inline_text(item)
+        if not cleaned:
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+
+    return result
+
+
+def _none_if_blank(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _clean_inline_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    parts = [part.strip() for part in text.splitlines() if part.strip()]
+    cleaned = " ".join(parts).strip()
+    return cleaned or None
+
+
+def _clean_multiline_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.rstrip() for line in text.split("\n")]
+
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    cleaned = "\n".join(lines).strip()
+    return cleaned or None
