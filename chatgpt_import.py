@@ -86,7 +86,7 @@ def normalize_entry(entry: dict, entry_index: int) -> dict:
 
     persons = [normalize_person(p) for p in as_list(entry.get("persons"))]
     places = [as_string(p) for p in as_list(entry.get("places")) if as_string(p)]
-    uncertainties = [as_string(u) for u in as_list(entry.get("uncertainties")) if as_string(u)]
+    unsicherheiten = [as_string(u) for u in as_list(entry.get("unsicherheiten")) if as_string(u)]
     notes = [as_string(n) for n in as_list(entry.get("notes")) if as_string(n)]
 
     return {
@@ -100,7 +100,7 @@ def normalize_entry(entry: dict, entry_index: int) -> dict:
         "places": places,
         "source_text_summary_german": as_string(entry.get("source_text_summary_german")),
         "genealogical_notes_german": as_string(entry.get("genealogical_notes_german")),
-        "unsicherheiten": uncertainties,
+        "unsicherheiten": unsicherheiten,
         "notes": notes,
         "confidence": as_float(entry.get("confidence"), 0.0),
     }
