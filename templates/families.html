@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Familien – {{ book_name }}</title>
+<link rel="stylesheet" href="/static/style.css">
+
+<style>
+body { margin: 0; }
+.layout { display: flex; }
+
+.sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 240px;
+    height: 100vh;
+    background: #f4f4f4;
+    padding: 20px;
+    box-sizing: border-box;
+    border-right: 1px solid #ddd;
+}
+
+.content {
+    margin-left: 260px;
+    padding: 20px;
+    width: 100%;
+}
+
+.sidebar a {
+    display: block;
+    margin-bottom: 10px;
+}
+
+.family-card {
+    border: 2px solid #ddd;
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 15px;
+    background: #fafafa;
+}
+
+.family-title {
+    font-weight: bold;
+    font-size: 1.2rem;
+    margin-bottom: 8px;
+}
+
+.child-list {
+    margin-left: 10px;
+}
+
+.child-item {
+    padding: 4px 0;
+    border-bottom: 1px dashed #ddd;
+}
+
+.sidebar-version {
+    margin-top: 24px;
+    line-height: 1.45;
+    word-break: break-word;
+}
+
+.version-label {
+    font-weight: 700;
+    display: block;
+    margin-bottom: 4px;
+}
+
+.version-hash,
+.version-date {
+    display: block;
+}
+
+.version-date {
+    opacity: 0.9;
+}
+</style>
+</head>
+
+<body>
+<div class="layout">
+
+<aside class="sidebar">
+    <div class="sidebar-inner">
+        <div>
+            <h1>Kirchenbuch Tool</h1>
+            <nav>
+                <a href="/">Start</a>
+                <a href="/books">Bücher</a>
+                <a href="/books/{{ book_name }}">Zum Buch</a>
+                <a href="/review">Review</a>
+            </nav>
+        </div>
+
+        <div class="sidebar-version">
+            <span class="version-label">Version</span>
+            {% if version_info %}
+                <span class="version-hash">{{ version_info.version }}</span>
+                <span class="version-date">• {{ version_info.date }}</span>
+            {% else %}
+                <span class="version-hash">{{ version }}</span>
+            {% endif %}
+        </div>
+    </div>
+</aside>
+
+<main class="content">
+
+<section class="card">
+    <h2>Familien – {{ book_name }}</h2>
+    <p>{{ families|length }} Familien gefunden</p>
+</section>
+
+<section class="card">
+
+{% if families %}
+    {% for fam in families %}
+    <div class="family-card">
+
+        <div class="family-title">
+            Vater: {{ fam.father_name or "unbekannt" }}
+            {% if fam.mother_name %}
+                — Mutter: {{ fam.mother_name }}
+            {% endif %}
+        </div>
+
+        <div>
+            Ort: {{ fam.place or "unbekannt" }}
+        </div>
+
+        <div style="margin-top: 8px;">
+            Kinder ({{ fam.children_count }}):
+        </div>
+
+        <div class="child-list">
+            {% for child in fam.children %}
+            <div class="child-item">
+                {{ child.full_name or child.name_original or "ohne Namen" }} — {{ child.date_text or "-" }}
+            </div>
+            {% endfor %}
+        </div>
+
+    </div>
+    {% endfor %}
+{% else %}
+    <p>Keine Familien gefunden.</p>
+{% endif %}
+
+</section>
+
+</main>
+</div>
+</body>
+</html>
