@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Review</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #f5f5f5;
+      color: #222;
+    }
+
+    .layout {
+      display: flex;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      width: 240px;
+      background: #1f2937;
+      color: white;
+      padding: 20px;
+      box-sizing: border-box;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    .sidebar h2 {
+      margin-top: 0;
+      font-size: 20px;
+    }
+
+    .sidebar a {
+      display: block;
+      color: white;
+      text-decoration: none;
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+    }
+
+    .sidebar a:hover,
+    .sidebar a.active {
+      background: #374151;
+    }
+
+    .content {
+      flex: 1;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+
+    .header {
+      margin-bottom: 20px;
+    }
+
+    .header h1 {
+      margin: 0 0 8px 0;
+    }
+
+    .meta {
+      color: #666;
+      font-size: 14px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 18px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+
+    .card h3 {
+      margin-top: 0;
+      margin-bottom: 10px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 8px 14px;
+      margin-bottom: 12px;
+    }
+
+    .label {
+      font-weight: bold;
+      color: #444;
+    }
+
+    .uncertainties {
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 12px;
+    }
+
+    .uncertainties h4 {
+      margin: 0 0 8px 0;
+      color: #9a3412;
+    }
+
+    .persons {
+      margin-top: 12px;
+    }
+
+    .persons h4 {
+      margin: 0 0 8px 0;
+    }
+
+    .persons ul,
+    .uncertainties ul {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    .confidence {
+      display: inline-block;
+      background: #e5e7eb;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 13px;
+      margin-left: 8px;
+    }
+
+    .empty {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+
+    .version {
+      margin-top: 24px;
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+
+    img.preview {
+      max-width: 220px;
+      border-radius: 8px;
+      border: 1px solid #ddd;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <h2>Matricula</h2>
+      <a href="/" {% if active_page == "start" %}class="active"{% endif %}>Start</a>
+      <a href="/books" {% if active_page == "books" %}class="active"{% endif %}>Bücher</a>
+      <a href="/pdfs" {% if active_page == "pdfs" %}class="active"{% endif %}>PDFs</a>
+      <a href="/jobs" {% if active_page == "jobs" %}class="active"{% endif %}>Jobs</a>
+      <a href="/review" {% if active_page == "review" %}class="active"{% endif %}>Review</a>
+
+      <div class="version">{{ version }}</div>
+    </aside>
+
+    <main class="content">
+      <div class="header">
+        <h1>Review offener Einträge</h1>
+        <div class="meta">{{ items|length }} unsichere oder prüfbedürftige Einträge</div>
+      </div>
+
+      {% if items %}
+        {% for item in items %}
+          <div class="card">
+            <h3>
+              {{ item.book_name }} –
+              {{ item.event_type or "Unklar" }}
+              <span class="confidence">Confidence: {{ "%.2f"|format(item.confidence or 0) }}</span>
+            </h3>
+
+            <div class="grid">
+              <div class="label">Seite</div>
+              <div>{{ item.source_image }}</div>
+
+              <div class="label">Eintrag</div>
+              <div>{{ item.entry_label or item.entry_index }}</div>
+
+              <div class="label">Datum</div>
+              <div>{{ item.date_text or "-" }}</div>
+
+              <div class="label">Sprache</div>
+              <div>{{ item.language or "-" }}</div>
+
+              <div class="label">Ort</div>
+              <div>{{ item.place or "-" }}</div>
+
+              <div class="label">Status</div>
+              <div>{{ item.review_status or "unreviewed" }}</div>
+
+              <div class="label">Zusammenfassung</div>
+              <div>{{ item.summary or "-" }}</div>
+
+              <div class="label">Genealogische Notizen</div>
+              <div>{{ item.genealogical_notes or "-" }}</div>
+            </div>
+
+            <div class="persons">
+              <h4>Personen</h4>
+              {% if item.persons %}
+                <ul>
+                  {% for person in item.persons %}
+                    <li>
+                      <strong>{{ person.role or "Rolle unklar" }}:</strong>
+                      {{ person.full_name or person.name_original or "Ohne Namen" }}
+                    </li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <div>Keine Personen erfasst.</div>
+              {% endif %}
+            </div>
+
+            <div class="uncertainties">
+              <h4>Unklarheiten</h4>
+              {% if item.uncertainties %}
+                <ul>
+                  {% for u in item.uncertainties %}
+                    <li>{{ u }}</li>
+                  {% endfor %}
+                </ul>
+              {% else %}
+                <div>Keine expliziten Unklarheiten, aber niedrige Confidence.</div>
+              {% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      {% else %}
+        <div class="empty">
+          Keine offenen Review-Einträge gefunden.
+        </div>
+      {% endif %}
+    </main>
+  </div>
+</body>
+</html>
