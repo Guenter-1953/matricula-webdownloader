@@ -768,22 +768,24 @@ def center_viewer_canvas(page):
 
 
 def save_viewer_screenshot(page, raw_path: Path, final_path: Path, debug_job_dir: Path, page_num: int):
-    center_viewer_canvas(page)
-
-    clip = detect_viewer_clip(page, debug_job_dir=debug_job_dir, page_num=page_num)
-
-    if clip:
-        try:
-            page.screenshot(path=str(raw_path), clip=clip)
-            shutil.copy(str(raw_path), str(final_path))
-            log(f"Viewer-Clip-Screenshot gespeichert für Seite {page_num}: {raw_path.name}")
-            return
-        except Exception as e:
-            log(f"Viewer-Clip-Screenshot fehlgeschlagen, Fallback full page: {e}")
+    """
+    WICHTIG:
+    Kein Clip/Crop mehr verwenden.
+    Immer das volle sichtbare Bild speichern, damit links nichts abgeschnitten wird.
+    Bestehende Dateien werden dabei bewusst ersetzt.
+    """
+    try:
+        center_viewer_canvas(page)
+    except Exception:
+        pass
 
     page.screenshot(path=str(raw_path), full_page=True)
+
+    if final_path.exists():
+        final_path.unlink()
+
     shutil.copy(str(raw_path), str(final_path))
-    log(f"Full-Page-Fallback-Screenshot gespeichert für Seite {page_num}: {raw_path.name}")
+    log(f"Full-Page-Screenshot gespeichert für Seite {page_num}: {raw_path.name}")
 
 
 def create_page_metadata(
@@ -1023,12 +1025,9 @@ def process_source_page(
     current_page_url: str,
 ) -> tuple[bool, str]:
     final_page_path = book_dir / f"page_{page_number:04d}.png"
-    final_json_path = book_dir / f"page_{page_number:04d}.json"
 
-    if final_page_path.exists() and final_json_path.exists():
-        log(f"Seite {page_number:04d} existiert bereits, überspringe erneutes Speichern")
-        return True, "already_exists"
-
+    # WICHTIG:
+    # Vorhandene Dateien nicht überspringen, sondern neu erzeugen/ersetzen.
     page.goto(current_page_url, wait_until="domcontentloaded")
     page.wait_for_timeout(nav_timeout_ms())
     time.sleep(short_pause())
@@ -1348,26 +1347,6 @@ def run_download_job(
 
                 current_page_url = make_page_url(url, page_number)
 
-                final_page_path = book_dir / f"page_{page_number:04d}.png"
-                final_json_path = book_dir / f"page_{page_number:04d}.json"
-
-                if final_page_path.exists() and final_json_path.exists():
-                    log(f"Seite {page_number:04d} existiert bereits → überspringe")
-                    update_status(
-                        save_job_status=save_job_status,
-                        job_id=job_id,
-                        book_name=book_name,
-                        status="running",
-                        message=f"Seite {page_number:04d} existiert bereits und wurde übersprungen.",
-                        saved_count=saved_count,
-                        current_page=page_number,
-                        total_pages_target=total_pages_to_fetch,
-                        start_page=requested_start_page,
-                        end_page=requested_end_page,
-                    )
-                    time.sleep(skip_pause())
-                    continue
-
                 update_status(
                     save_job_status=save_job_status,
                     job_id=job_id,
@@ -1393,17 +1372,12 @@ def run_download_job(
 
                 if success:
                     saved_count += 1
-                    if reason == "already_exists":
-                        message = f"Seite {page_number:04d} war bereits vorhanden."
-                    else:
-                        message = f"Seite {page_number:04d} gespeichert"
-
                     update_status(
                         save_job_status=save_job_status,
                         job_id=job_id,
                         book_name=book_name,
                         status="running",
-                        message=message,
+                        message=f"Seite {page_number:04d} gespeichert oder ersetzt",
                         saved_count=saved_count,
                         current_page=page_number,
                         total_pages_target=total_pages_to_fetch,
@@ -1499,7 +1473,7 @@ def run_download_job(
                 )
 
             if saved_count == 0 and not remaining_failed:
-                finish_message = "Download abgeschlossen, alle Seiten waren bereits vorhanden."
+                finish_message = "Download abgeschlossen, aber es wurde keine Seite erfolgreich gespeichert."
 
             update_status(
                 save_job_status=save_job_status,
