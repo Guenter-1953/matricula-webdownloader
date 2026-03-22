@@ -172,10 +172,55 @@
     box-sizing: border-box;
 }
 
+.review-card {
+    border-left: 8px solid #d4a100;
+}
+
+.review-grid {
+    display: grid;
+    grid-template-columns: 170px 1fr;
+    gap: 8px 14px;
+    margin-top: 10px;
+}
+
+.review-label {
+    font-weight: 700;
+    color: #444;
+}
+
+.review-confidence {
+    display: inline-block;
+    background: #f1f3f5;
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 0.9rem;
+}
+
+.review-list {
+    margin: 0;
+    padding-left: 18px;
+}
+
+.review-block {
+    margin-top: 12px;
+}
+
+.review-box {
+    background: #fff8e6;
+    border: 1px solid #e1c36a;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 12px;
+}
+
 @media (max-width: 700px) {
     .page-range-row {
         flex-direction: column;
         gap: 0;
+    }
+
+    .review-grid {
+        grid-template-columns: 1fr;
     }
 }
 
@@ -211,6 +256,7 @@
                 <a href="/books" class="{% if active_page=='books' %}active-menu{% endif %}">Bücher</a>
                 <a href="/pdfs" class="{% if active_page=='pdfs' %}active-menu{% endif %}">PDFs</a>
                 <a href="/jobs" class="{% if active_page=='jobs' %}active-menu{% endif %}">Jobs</a>
+                <a href="/review" class="{% if active_page=='review' %}active-menu{% endif %}">Review</a>
             </nav>
         </div>
 
@@ -464,6 +510,86 @@
                 <p id="noJobsText">Noch keine Jobs vorhanden.</p>
             {% endif %}
         </div>
+    </section>
+    {% endif %}
+
+    {% if active_page == "review" %}
+    <section class="card">
+        <h2>Review offener Einträge</h2>
+        <p>{{ review_items|length }} unsichere oder prüfbedürftige Einträge</p>
+
+        {% if review_items %}
+            {% for item in review_items %}
+            <div class="card review-card">
+                <div class="job-top">
+                    <div class="job-title">
+                        <strong>{{ item.book_name }}</strong>
+                    </div>
+                    <div class="review-confidence">Confidence: {{ "%.2f"|format(item.confidence or 0) }}</div>
+                </div>
+
+                <div class="review-grid">
+                    <div class="review-label">Eintrag</div>
+                    <div>{{ item.entry_label or item.entry_index or "-" }}</div>
+
+                    <div class="review-label">Ereignis</div>
+                    <div>{{ item.event_type or "-" }}</div>
+
+                    <div class="review-label">Datum</div>
+                    <div>{{ item.date_text or "-" }}</div>
+
+                    <div class="review-label">Sprache</div>
+                    <div>{{ item.language or "-" }}</div>
+
+                    <div class="review-label">Ort</div>
+                    <div>{{ item.place or "-" }}</div>
+
+                    <div class="review-label">Bild</div>
+                    <div>{{ item.source_image or "-" }}</div>
+
+                    <div class="review-label">Zusammenfassung</div>
+                    <div>{{ item.summary or "-" }}</div>
+
+                    <div class="review-label">Genealogische Notizen</div>
+                    <div>{{ item.genealogical_notes or "-" }}</div>
+
+                    <div class="review-label">Status</div>
+                    <div>{{ item.review_status or "unreviewed" }}</div>
+                </div>
+
+                <div class="review-block">
+                    <strong>Personen</strong>
+                    {% if item.persons %}
+                    <ul class="review-list">
+                        {% for person in item.persons %}
+                        <li>
+                            <strong>{{ person.role or "Rolle unklar" }}:</strong>
+                            {{ person.full_name or person.name_original or person.name or "Ohne Namen" }}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    {% else %}
+                    <p>Keine Personen erfasst.</p>
+                    {% endif %}
+                </div>
+
+                <div class="review-box">
+                    <strong>Unklarheiten</strong>
+                    {% if item.uncertainties %}
+                    <ul class="review-list">
+                        {% for u in item.uncertainties %}
+                        <li>{{ u }}</li>
+                        {% endfor %}
+                    </ul>
+                    {% else %}
+                    <p>Keine expliziten Unklarheiten, aber niedrige Confidence.</p>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <p>Keine offenen Review-Einträge gefunden.</p>
+        {% endif %}
     </section>
     {% endif %}
 
