@@ -375,6 +375,7 @@
                 <li data-book="{{ book.name | lower }}">
                     <a href="/books/{{ book.name }}">{{ book.name }}</a>
                     — Bilder: {{ book.image_count }}
+                    — <a href="/familien/{{ book.name }}">Familien</a>
                     {% if book.pdf_exists %}
                     — <a href="/pdf/{{ book.pdf_name }}" target="_blank">PDF öffnen</a>
                     {% endif %}
@@ -414,6 +415,7 @@
                 <li data-book="{{ book.name | lower }}">
                     <a href="/books/{{ book.name }}">{{ book.name }}</a>
                     — Bilder: {{ book.image_count }}
+                    — <a href="/familien/{{ book.name }}">Familien</a>
                     {% if book.pdf_exists %}
                     — <a href="/pdf/{{ book.pdf_name }}" target="_blank">PDF öffnen</a>
                     {% endif %}
@@ -776,6 +778,7 @@
                 <li data-book="${escapeHtml((book.name || "").toLowerCase())}">
                     <a href="/books/${encodeURIComponent(book.name || "")}">${escapeHtml(book.name || "")}</a>
                     — Bilder: ${escapeHtml(book.image_count ?? 0)}
+                    — <a href="/familien/${encodeURIComponent(book.name || "")}">Familien</a>
                     ${pdfLink}
                 </li>
             `;
