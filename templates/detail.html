@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>{{ person_name }}</title>
+<link rel="stylesheet" href="/static/style.css">
+
+<style>
+body { margin:0; }
+.layout { display:flex; }
+
+.sidebar {
+    position:fixed;
+    left:0;
+    top:0;
+    width:240px;
+    height:100vh;
+    background:#f4f4f4;
+    padding:20px;
+    border-right:1px solid #ddd;
+}
+
+.content {
+    margin-left:260px;
+    padding:20px;
+}
+
+.card {
+    margin-bottom:15px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="layout">
+
+<aside class="sidebar">
+    <h1>Kirchenbuch Tool</h1>
+    <nav>
+        <a href="/">Start</a>
+        <a href="/books">Bücher</a>
+        <a href="/books/{{ book_name }}">Zum Buch</a>
+        <a href="/book/{{ book_name }}/persons">Personenliste</a>
+    </nav>
+</aside>
+
+<main class="content">
+
+<section class="card">
+    <h2>{{ person_name }}</h2>
+    <p>{{ matches|length }} Treffer</p>
+</section>
+
+{% for e in matches %}
+<section class="card">
+
+<strong>Rolle:</strong> {{ e.role }}<br>
+<strong>Ereignis:</strong> {{ e.event.type if e.event else "-" }}<br>
+<strong>Datum:</strong> {{ e.event.date_text if e.event else "-" }}<br>
+<strong>Ort:</strong> {{ e.event.place if e.event else "-" }}<br>
+<strong>Quelle:</strong> {{ e.source_file }}<br>
+
+</section>
+{% endfor %}
+
+</main>
+</div>
+
+</body>
+</html>
