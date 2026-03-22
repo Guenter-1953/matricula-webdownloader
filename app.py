@@ -515,6 +515,17 @@ def load_persons_from_family_units(book_name):
         return None
 
 
+def load_families_from_persons(book_name):
+    path = BOOKS_DIR / book_name / "families_from_persons.json"
+    if not path.exists():
+        return None
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def normalize_person_lookup_name(name):
     return str(name or "").strip().lower()
 
@@ -761,6 +772,27 @@ def show_person_detail(book_name, person_name):
         book_name=book_name,
         person_name=person_name,
         matches=matches,
+        version=version_info["text"],
+        version_info=version_info
+    )
+
+
+@app.route("/familien/<book_name>")
+def show_families(book_name):
+    data = load_families_from_persons(book_name)
+    version_info = load_version_info()
+
+    if data is None:
+        return "families_from_persons.json nicht gefunden", 404
+
+    families = data.get("families", [])
+    if not isinstance(families, list):
+        families = []
+
+    return render_template(
+        "families.html",
+        book_name=book_name,
+        families=families,
         version=version_info["text"],
         version_info=version_info
     )
