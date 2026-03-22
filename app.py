@@ -1,706 +1,699 @@
-<!DOCTYPE html>
-<html lang="de">
-<head>
-<meta charset="UTF-8">
-<title>Kirchenbuch Downloader</title>
-<link rel="stylesheet" href="/static/style.css?v=17">
-<style>
-.job-item {
-    position: relative;
-    border-left: 8px solid #cfcfcf;
-    transition: all 0.25s ease;
-}
-
-.job-item.status-gestartet,
-.job-item.status-starting {
-    border-left-color: #e0a800;
-}
-
-.job-item.status-läuft,
-.job-item.status-running {
-    border-left-color: #4aa3df;
-}
-
-.job-item.status-fertig,
-.job-item.status-finished {
-    border-left-color: #2e9b52;
-}
-
-.job-item.status-fehler,
-.job-item.status-error {
-    border-left-color: #c0392b;
-}
-
-.job-item.status-abgebrochen,
-.job-item.status-cancelled {
-    border-left-color: #7f8c8d;
-}
-
-.job-dot {
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: #bdbdbd;
-    margin-right: 10px;
-    vertical-align: middle;
-}
-
-.job-item.status-gestartet .job-dot,
-.job-item.status-starting .job-dot {
-    background: #e0a800;
-    animation: pulseSoft 1.4s infinite;
-}
-
-.job-item.status-läuft .job-dot,
-.job-item.status-running .job-dot {
-    background: #4aa3df;
-    animation: pulseStrong 1s infinite;
-}
-
-.job-item.status-fertig .job-dot,
-.job-item.status-finished .job-dot {
-    background: #2e9b52;
-}
-
-.job-item.status-fehler .job-dot,
-.job-item.status-error .job-dot {
-    background: #c0392b;
-}
-
-.job-item.status-abgebrochen .job-dot,
-.job-item.status-cancelled .job-dot {
-    background: #7f8c8d;
-}
-
-.job-state {
-    font-weight: 700;
-    text-transform: lowercase;
-}
-
-.job-item.status-gestartet .job-state,
-.job-item.status-starting .job-state {
-    color: #e0a800;
-    animation: blinkText 1.4s infinite;
-}
-
-.job-item.status-läuft .job-state,
-.job-item.status-running .job-state {
-    color: #2a84c9;
-    animation: blinkText 1s infinite;
-}
-
-.job-item.status-fertig .job-state,
-.job-item.status-finished .job-state {
-    color: #2e9b52;
-}
-
-.job-item.status-fehler .job-state,
-.job-item.status-error .job-state {
-    color: #c0392b;
-}
-
-.job-item.status-abgebrochen .job-state,
-.job-item.status-cancelled .job-state {
-    color: #7f8c8d;
-}
-
-.sidebar-version {
-    line-height: 1.45;
-    word-break: break-word;
-}
-
-.version-label {
-    font-weight: 700;
-    display: block;
-    margin-bottom: 4px;
-}
-
-.version-hash {
-    display: block;
-}
-
-.version-date {
-    display: block;
-    opacity: 0.9;
-}
-
-.job-progress {
-    margin-top: 8px;
-    font-size: 0.95rem;
-    color: #444;
-}
-
-.job-current-page {
-    margin-left: 12px;
-}
-
-.job-stats {
-    margin-top: 8px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px 18px;
-    font-size: 0.92rem;
-    color: #444;
-}
-
-.job-stat {
-    background: #f6f7f8;
-    border-radius: 7px;
-    padding: 5px 9px;
-}
-
-.job-meta {
-    margin-top: 8px;
-    font-size: 0.88rem;
-    color: #666;
-}
-
-.page-range-row {
-    display: flex;
-    gap: 14px;
-    align-items: flex-end;
-}
-
-.page-range-col {
-    flex: 1;
-    min-width: 0;
-}
-
-.page-range-col input {
-    width: 100%;
-    box-sizing: border-box;
-}
-
-@media (max-width: 700px) {
-    .page-range-row {
-        flex-direction: column;
-        gap: 0;
-    }
-}
-
-@keyframes pulseSoft {
-    0% { transform: scale(1); opacity: 1; }
-    50% { transform: scale(1.15); opacity: 0.65; }
-    100% { transform: scale(1); opacity: 1; }
-}
-
-@keyframes pulseStrong {
-    0% { transform: scale(1); opacity: 1; }
-    50% { transform: scale(1.22); opacity: 0.5; }
-    100% { transform: scale(1); opacity: 1; }
-}
-
-@keyframes blinkText {
-    0% { opacity: 1; }
-    50% { opacity: 0.45; }
-    100% { opacity: 1; }
-}
-</style>
-</head>
-<body>
-
-<div class="layout">
-
-<aside class="sidebar">
-    <div class="sidebar-inner">
-        <div>
-            <h1>Kirchenbuch Tool</h1>
-            <nav>
-                <a href="/" class="{% if active_page=='start' %}active-menu{% endif %}">Start</a>
-                <a href="/books" class="{% if active_page=='books' %}active-menu{% endif %}">Bücher</a>
-                <a href="/pdfs" class="{% if active_page=='pdfs' %}active-menu{% endif %}">PDFs</a>
-                <a href="/jobs" class="{% if active_page=='jobs' %}active-menu{% endif %}">Jobs</a>
-            </nav>
-        </div>
-
-        <div class="sidebar-version">
-            <span class="version-label">Version</span>
-            {% if version_info %}
-                <span class="version-hash">{{ version_info.version }}</span>
-                <span class="version-date">• {{ version_info.date }}</span>
-            {% elif "•" in version %}
-                <span class="version-hash">{{ version.split("•")[0].strip() }}</span>
-                <span class="version-date">• {{ version.split("•")[1].strip() }}</span>
-            {% else %}
-                <span class="version-hash">{{ version }}</span>
-            {% endif %}
-        </div>
-    </div>
-</aside>
-
-<main class="content">
-
-    {% if active_page == "start" %}
-
-    <section class="card">
-        <h2>Kirchenbuch herunterladen</h2>
-
-        <form action="/start" method="post" id="downloadForm">
-            <label>Kirchenbuch-Link:</label>
-            <input type="text" id="book_url" name="book_url" placeholder="https://data.matricula-online.eu/..." autocomplete="off">
-
-            <label>Name für die Ablage:</label>
-            <input type="text" id="book_name" name="book_name" placeholder="z. B. Wien_Taufen_1780_1790" autocomplete="off">
-
-            <div class="page-range-row">
-                <div class="page-range-col">
-                    <label>Startseite (optional):</label>
-                    <input type="number" id="start_page" name="start_page" min="1" placeholder="z. B. 1">
-                </div>
-
-                <div class="page-range-col">
-                    <label>Endseite (optional):</label>
-                    <input type="number" id="end_page" name="end_page" min="1" placeholder="z. B. 5">
-                </div>
-            </div>
-
-            <button type="submit">Download starten</button>
-        </form>
-    </section>
-
-    <section class="card">
-        <h2>Jobs</h2>
-
-        <div class="job-list" id="jobList">
-            {% if jobs %}
-                {% for job in jobs %}
-                <div class="job-item status-{{ job.status|lower|replace(' ', '-') }}">
-                    <div class="job-top">
-                        <div class="job-title">
-                            <span class="job-dot"></span>
-                            <strong>{{ job.book_name }}</strong>
-                        </div>
-                        <div class="job-state">
-                            {{ job.status }}
-                        </div>
-                    </div>
-
-                    <div class="job-message">{{ job.message }}</div>
-
-                    <div class="job-progress">
-                        <span>Seiten: {{ job.pages or job.saved_count or 0 }}</span>
-                        {% if job.current_page and job.status not in ["fertig", "fehler", "abgebrochen"] %}
-                        <span class="job-current-page">Aktuelle Seite: {{ job.current_page }}</span>
-                        {% endif %}
-                    </div>
-
-                    <div class="job-stats">
-                        <span class="job-stat">Phase: {{ job.phase_label or "-" }}</span>
-                        <span class="job-stat">Läuft seit: {{ job.runtime_text or "-" }}</span>
-                        <span class="job-stat">Ø / Seite: {{ job.avg_seconds_per_page_text or "-" }}</span>
-                        <span class="job-stat">Restzeit: {{ job.estimated_remaining_text or "-" }}</span>
-                    </div>
-
-                    <div class="job-meta">
-                        <span>Job-ID: {{ job.job_id }}</span>
-                        {% if job.start_page or job.end_page %}
-                        <span style="margin-left: 12px;">
-                            Bereich:
-                            {{ job.start_page if job.start_page is not none else "-" }}–{{ job.end_page if job.end_page is not none else "-" }}
-                        </span>
-                        {% endif %}
-                    </div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <p id="noJobsText">Noch keine Jobs vorhanden.</p>
-            {% endif %}
-        </div>
-    </section>
-
-    <section class="card">
-        <h2>Gespeicherte Bücher</h2>
-
-        <div style="margin-bottom:12px;padding:10px;border:2px solid #d4a100;background:#fff8cc;border-radius:8px;">
-            <strong>Suche:</strong>
-            <input
-                type="text"
-                id="bookSearch"
-                placeholder="Bücher suchen..."
-                style="margin-left:10px;padding:8px;width:100%;max-width:380px;border:1px solid #888;border-radius:6px;"
-            >
-        </div>
-
-        {% if books %}
-        <div class="book-list">
-            <ul id="bookList">
-                {% for book in books %}
-                <li data-book="{{ book.name | lower }}">
-                    <a href="/books/{{ book.name }}">{{ book.name }}</a>
-                    — Bilder: {{ book.image_count }}
-                    {% if book.pdf_exists %}
-                    — <a href="/pdf/{{ book.pdf_name }}" target="_blank">PDF öffnen</a>
-                    {% endif %}
-                </li>
-                {% endfor %}
-            </ul>
-            <p id="noBooksText" style="display:none;">Noch keine Bücher gespeichert.</p>
-        </div>
-        {% else %}
-        <p id="noBooksText">Noch keine Bücher gespeichert.</p>
-        <div class="book-list">
-            <ul id="bookList"></ul>
-        </div>
-        {% endif %}
-    </section>
-
-    {% endif %}
-
-    {% if active_page == "books" %}
-    <section class="card">
-        <h2>Bücher</h2>
-
-        <div style="margin-bottom:12px;padding:10px;border:2px solid #d4a100;background:#fff8cc;border-radius:8px;">
-            <strong>Suche:</strong>
-            <input
-                type="text"
-                id="bookSearch"
-                placeholder="Bücher suchen..."
-                style="margin-left:10px;padding:8px;width:100%;max-width:380px;border:1px solid #888;border-radius:6px;"
-            >
-        </div>
-
-        {% if books %}
-        <div class="book-list">
-            <ul id="bookList">
-                {% for book in books %}
-                <li data-book="{{ book.name | lower }}">
-                    <a href="/books/{{ book.name }}">{{ book.name }}</a>
-                    — Bilder: {{ book.image_count }}
-                    {% if book.pdf_exists %}
-                    — <a href="/pdf/{{ book.pdf_name }}" target="_blank">PDF öffnen</a>
-                    {% endif %}
-                </li>
-                {% endfor %}
-            </ul>
-            <p id="noBooksText" style="display:none;">Noch keine Bücher gespeichert.</p>
-        </div>
-        {% else %}
-        <p id="noBooksText">Noch keine Bücher gespeichert.</p>
-        <div class="book-list">
-            <ul id="bookList"></ul>
-        </div>
-        {% endif %}
-    </section>
-    {% endif %}
-
-    {% if active_page == "pdfs" %}
-    <section class="card">
-        <h2>PDFs</h2>
-
-        <div style="margin-bottom:12px;padding:10px;border:2px solid #d4a100;background:#fff8cc;border-radius:8px;">
-            <strong>Suche:</strong>
-            <input
-                type="text"
-                id="pdfSearch"
-                placeholder="PDF suchen..."
-                style="margin-left:10px;padding:8px;width:100%;max-width:380px;border:1px solid #888;border-radius:6px;"
-            >
-        </div>
-
-        {% if pdfs %}
-        <div class="book-list">
-            <ul id="pdfList">
-                {% for pdf in pdfs %}
-                <li data-pdf="{{ pdf.name | lower }}">
-                    <a href="/pdf/{{ pdf.name }}" target="_blank">{{ pdf.name }}</a>
-                </li>
-                {% endfor %}
-            </ul>
-        </div>
-        {% else %}
-        <p>Noch keine PDFs vorhanden.</p>
-        {% endif %}
-    </section>
-    {% endif %}
-
-    {% if active_page == "jobs" %}
-    <section class="card">
-        <h2>Jobs</h2>
-
-        <div class="job-list" id="jobList">
-            {% if jobs %}
-                {% for job in jobs %}
-                <div class="job-item status-{{ job.status|lower|replace(' ', '-') }}">
-                    <div class="job-top">
-                        <div class="job-title">
-                            <span class="job-dot"></span>
-                            <strong>{{ job.book_name }}</strong>
-                        </div>
-                        <div class="job-state">
-                            {{ job.status }}
-                        </div>
-                    </div>
-
-                    <div class="job-message">{{ job.message }}</div>
-
-                    <div class="job-progress">
-                        <span>Seiten: {{ job.pages or job.saved_count or 0 }}</span>
-                        {% if job.current_page and job.status not in ["fertig", "fehler", "abgebrochen"] %}
-                        <span class="job-current-page">Aktuelle Seite: {{ job.current_page }}</span>
-                        {% endif %}
-                    </div>
-
-                    <div class="job-stats">
-                        <span class="job-stat">Phase: {{ job.phase_label or "-" }}</span>
-                        <span class="job-stat">Läuft seit: {{ job.runtime_text or "-" }}</span>
-                        <span class="job-stat">Ø / Seite: {{ job.avg_seconds_per_page_text or "-" }}</span>
-                        <span class="job-stat">Restzeit: {{ job.estimated_remaining_text or "-" }}</span>
-                    </div>
-
-                    <div class="job-meta">
-                        <span>Job-ID: {{ job.job_id }}</span>
-                        {% if job.start_page or job.end_page %}
-                        <span style="margin-left: 12px;">
-                            Bereich:
-                            {{ job.start_page if job.start_page is not none else "-" }}–{{ job.end_page if job.end_page is not none else "-" }}
-                        </span>
-                        {% endif %}
-                    </div>
-                </div>
-                {% endfor %}
-            {% else %}
-                <p id="noJobsText">Noch keine Jobs vorhanden.</p>
-            {% endif %}
-        </div>
-    </section>
-    {% endif %}
-
-</main>
-
-</div>
-
-<script>
-(function () {
-    const urlField = document.getElementById("book_url");
-    const nameField = document.getElementById("book_name");
-    const startPageField = document.getElementById("start_page");
-    const endPageField = document.getElementById("end_page");
-    const form = document.getElementById("downloadForm");
-
-    function saveFormData() {
-        if (!urlField || !nameField) return;
-        localStorage.setItem("matricula_book_url", urlField.value);
-        localStorage.setItem("matricula_book_name", nameField.value);
-        localStorage.setItem("matricula_start_page", startPageField ? startPageField.value : "");
-        localStorage.setItem("matricula_end_page", endPageField ? endPageField.value : "");
+from flask import Flask, render_template, request, redirect, send_from_directory, jsonify
+from pathlib import Path
+import json
+import threading
+import uuid
+from datetime import datetime, timedelta
+from downloader import run_download_job
+
+app = Flask(__name__)
+
+APP_DISPLAY_VERSION = "v1.1.2"
+BUILD_DATE = "2026-03-21"
+
+DATA_DIR = Path("/app/data")
+BOOKS_DIR = DATA_DIR / "books"
+PDF_DIR = DATA_DIR / "pdf"
+JOBS_DIR = DATA_DIR / "jobs"
+VERSION_FILE = Path("/app/version.json")
+
+BOOKS_DIR.mkdir(parents=True, exist_ok=True)
+PDF_DIR.mkdir(parents=True, exist_ok=True)
+JOBS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def now_iso():
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def parse_iso(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def parse_positive_int(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    try:
+        number = int(text)
+    except Exception:
+        return None
+
+    if number < 1:
+        return None
+
+    return number
+
+
+def normalize_page_range(start_page, end_page):
+    start_value = parse_positive_int(start_page)
+    end_value = parse_positive_int(end_page)
+
+    if start_value is not None and end_value is not None and end_value < start_value:
+        start_value, end_value = end_value, start_value
+
+    return start_value, end_value
+
+
+def calculate_total_pages_target(start_page, end_page, default_value=15):
+    if start_page is not None and end_page is not None:
+        return max((end_page - start_page + 1), 1)
+
+    if start_page is not None and end_page is None:
+        return default_value
+
+    if start_page is None and end_page is not None:
+        return end_page
+
+    return default_value
+
+
+def format_seconds_hms(seconds):
+    if seconds is None:
+        return None
+    seconds = max(0, int(seconds))
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def normalize_status_label(status: str) -> str:
+    value = str(status or "").strip().lower()
+
+    mapping = {
+        "started": "gestartet",
+        "starting": "gestartet",
+        "running": "läuft",
+        "finished": "fertig",
+        "done": "fertig",
+        "error": "fehler",
+        "failed": "fehler",
+        "cancelled": "abgebrochen",
+        "canceled": "abgebrochen",
+        "aborted": "abgebrochen",
+        "gestartet": "gestartet",
+        "läuft": "läuft",
+        "fertig": "fertig",
+        "fehler": "fehler",
+        "abgebrochen": "abgebrochen",
     }
 
-    function restoreFormData() {
-        if (!urlField || !nameField) return;
+    return mapping.get(value, value or "unbekannt")
 
-        const savedUrl = localStorage.getItem("matricula_book_url");
-        const savedName = localStorage.getItem("matricula_book_name");
-        const savedStartPage = localStorage.getItem("matricula_start_page");
-        const savedEndPage = localStorage.getItem("matricula_end_page");
 
-        if (savedUrl !== null && urlField.value === "") {
-            urlField.value = savedUrl;
-        }
-        if (savedName !== null && nameField.value === "") {
-            nameField.value = savedName;
-        }
-        if (startPageField && savedStartPage !== null && startPageField.value === "") {
-            startPageField.value = savedStartPage;
-        }
-        if (endPageField && savedEndPage !== null && endPageField.value === "") {
-            endPageField.value = savedEndPage;
-        }
+def status_css_class(status: str) -> str:
+    value = normalize_status_label(status)
+
+    mapping = {
+        "gestartet": "starting",
+        "läuft": "running",
+        "fertig": "finished",
+        "fehler": "error",
+        "abgebrochen": "cancelled",
     }
 
-    function isTyping() {
-        const active = document.activeElement;
-        return active === urlField || active === nameField || active === startPageField || active === endPageField;
+    return mapping.get(value, "unknown")
+
+
+def infer_phase(payload: dict) -> str:
+    status = normalize_status_label(payload.get("status", ""))
+
+    if status == "fertig":
+        return "fertig"
+    if status == "fehler":
+        return "fehler"
+    if status == "abgebrochen":
+        return "abgebrochen"
+
+    message = str(payload.get("message", "")).lower()
+
+    if "pdf" in message:
+        return "pdf"
+    if "nachlade" in message or "retry" in message or "nachgeladen" in message:
+        return "retry"
+    if "metadaten" in message:
+        return "metadaten"
+    if "prüfe startseite" in message or "startseite" in message:
+        return "startseite"
+    if "lade quellseite" in message or "gespeichert" in message or "übersprungen" in message:
+        return "download"
+    if status == "gestartet":
+        return "gestartet"
+
+    existing_phase = str(payload.get("phase") or "").strip()
+    if existing_phase:
+        return existing_phase
+
+    return "läuft"
+
+
+def phase_label(phase: str) -> str:
+    mapping = {
+        "gestartet": "Gestartet",
+        "metadaten": "Metadaten",
+        "startseite": "Startseite suchen",
+        "download": "Download",
+        "retry": "Nachladen",
+        "pdf": "PDF erzeugen",
+        "fertig": "Fertig",
+        "fehler": "Fehler",
+        "abgebrochen": "Abgebrochen",
+        "läuft": "Läuft",
+        "review": "Review",
+    }
+    return mapping.get(str(phase or "").lower(), str(phase or "").capitalize())
+
+
+def enrich_job_metrics(job: dict) -> dict:
+    job = dict(job or {})
+
+    status = normalize_status_label(job.get("status"))
+    job["status"] = status
+    job["status_class"] = status_css_class(status)
+
+    pages = job.get("pages", job.get("saved_count", 0))
+    saved_count = job.get("saved_count", pages)
+
+    try:
+        pages = int(pages or 0)
+    except Exception:
+        pages = 0
+
+    try:
+        saved_count = int(saved_count or 0)
+    except Exception:
+        saved_count = 0
+
+    job["pages"] = pages
+    job["saved_count"] = saved_count
+
+    started_at = job.get("started_at") or job.get("created_at")
+    finished_at = job.get("finished_at")
+
+    if not started_at:
+        started_at = now_iso()
+
+    job["created_at"] = started_at
+    job["started_at"] = started_at
+
+    if status in ("fertig", "fehler", "abgebrochen") and not finished_at:
+        finished_at = job.get("updated_at") or now_iso()
+
+    if finished_at:
+        job["finished_at"] = finished_at
+
+    started_dt = parse_iso(started_at)
+    finished_dt = parse_iso(finished_at)
+
+    runtime_seconds = None
+    if started_dt is not None:
+        if status in ("fertig", "fehler", "abgebrochen") and finished_dt is not None:
+            runtime_seconds = max(0, int((finished_dt - started_dt).total_seconds()))
+        else:
+            runtime_seconds = max(0, int((datetime.now() - started_dt).total_seconds()))
+
+    job["runtime_seconds"] = runtime_seconds
+    job["runtime_text"] = format_seconds_hms(runtime_seconds)
+
+    avg_seconds = None
+    if runtime_seconds is not None and saved_count > 0:
+        avg_seconds = round(runtime_seconds / saved_count, 1)
+
+    job["avg_seconds_per_page"] = avg_seconds
+    job["avg_seconds_per_page_text"] = None if avg_seconds is None else f"{avg_seconds:.1f} s"
+
+    total_pages_target = job.get("total_pages_target", 15)
+    try:
+        total_pages_target = int(total_pages_target or 15)
+    except Exception:
+        total_pages_target = 15
+
+    if total_pages_target < saved_count:
+        total_pages_target = saved_count
+
+    job["total_pages_target"] = total_pages_target
+
+    phase = infer_phase(job)
+    job["phase"] = phase
+    job["phase_label"] = phase_label(phase)
+
+    estimated_remaining_seconds = None
+    if status in ("gestartet", "läuft") and avg_seconds is not None and phase in ("download", "startseite", "metadaten"):
+        remaining_pages = max(total_pages_target - saved_count, 0)
+        estimated_remaining_seconds = int(round(remaining_pages * avg_seconds))
+
+    job["estimated_remaining_seconds"] = estimated_remaining_seconds
+    job["estimated_remaining_text"] = format_seconds_hms(estimated_remaining_seconds)
+
+    if status in ("fertig", "fehler", "abgebrochen"):
+        job["current_page"] = None
+
+    return job
+
+
+def load_version_info():
+    version = APP_DISPLAY_VERSION
+    date = BUILD_DATE
+
+    if VERSION_FILE.exists():
+        try:
+            data = json.loads(VERSION_FILE.read_text(encoding="utf-8"))
+            version = str(data.get("version") or version)
+            date = str(data.get("date") or date)
+        except Exception:
+            pass
+
+    return {
+        "version": version,
+        "date": date,
+        "text": f"{version} • {date}",
     }
 
-    if (urlField && nameField && form) {
-        restoreFormData();
-        urlField.addEventListener("input", saveFormData);
-        nameField.addEventListener("input", saveFormData);
-        if (startPageField) startPageField.addEventListener("input", saveFormData);
-        if (endPageField) endPageField.addEventListener("input", saveFormData);
 
-        form.addEventListener("submit", function () {
-            localStorage.removeItem("matricula_book_url");
-            localStorage.removeItem("matricula_book_name");
-            localStorage.removeItem("matricula_start_page");
-            localStorage.removeItem("matricula_end_page");
-        });
+def save_job_status(job_id, status):
+    job_file = JOBS_DIR / f"{job_id}.json"
+
+    existing = {}
+    if job_file.exists():
+        try:
+            existing = json.loads(job_file.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+
+    incoming = dict(status or {})
+    payload = dict(existing)
+    payload.update(incoming)
+
+    payload["job_id"] = payload.get("job_id", job_id)
+
+    normalized_status = normalize_status_label(payload.get("status"))
+    payload["status"] = normalized_status
+    payload["status_class"] = status_css_class(normalized_status)
+
+    original_started_at = (
+        existing.get("started_at")
+        or existing.get("created_at")
+        or incoming.get("started_at")
+        or incoming.get("created_at")
+        or now_iso()
+    )
+
+    payload["created_at"] = original_started_at
+    payload["started_at"] = original_started_at
+    payload["updated_at"] = now_iso()
+    payload["pages"] = payload.get("pages", payload.get("saved_count", 0))
+    payload["saved_count"] = payload.get("saved_count", payload.get("pages", 0))
+    payload["message"] = payload.get("message", "")
+    payload["phase"] = infer_phase(payload)
+    payload["total_pages_target"] = payload.get("total_pages_target", existing.get("total_pages_target", 15))
+    payload["start_page"] = payload.get("start_page", existing.get("start_page"))
+    payload["end_page"] = payload.get("end_page", existing.get("end_page"))
+
+    if normalized_status in ("fertig", "fehler", "abgebrochen"):
+        payload["finished_at"] = existing.get("finished_at") or incoming.get("finished_at") or payload["updated_at"]
+
+    payload = enrich_job_metrics(payload)
+
+    job_file.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
+
+
+def load_job_status(job_id):
+    job_file = JOBS_DIR / f"{job_id}.json"
+    if not job_file.exists():
+        return None
+
+    job = json.loads(job_file.read_text(encoding="utf-8"))
+    return enrich_job_metrics(job)
+
+
+def cleanup_old_jobs():
+    now = datetime.now()
+
+    for job_file in JOBS_DIR.glob("*.json"):
+        try:
+            job = json.loads(job_file.read_text(encoding="utf-8"))
+            created_at = job.get("started_at") or job.get("created_at")
+            status = normalize_status_label(job.get("status", ""))
+
+            if not created_at:
+                continue
+
+            created_dt = datetime.fromisoformat(created_at)
+            age = now - created_dt
+
+            if status == "fertig" and age > timedelta(days=7):
+                job_file.unlink(missing_ok=True)
+            elif status in ("fehler", "abgebrochen") and age > timedelta(days=2):
+                job_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def load_all_jobs():
+    jobs = []
+    cutoff = datetime.now() - timedelta(minutes=10)
+
+    for job_file in sorted(JOBS_DIR.glob("*.json")):
+        try:
+            job = json.loads(job_file.read_text(encoding="utf-8"))
+
+            status = normalize_status_label(job.get("status", ""))
+            started_at = job.get("started_at") or job.get("created_at")
+
+            if started_at and status in ("gestartet", "läuft"):
+                try:
+                    started_dt = datetime.fromisoformat(started_at)
+                    if started_dt < cutoff:
+                        job["status"] = "abgebrochen"
+                        job["status_class"] = status_css_class("abgebrochen")
+                        job["message"] = "Job war zu lange aktiv und wurde als abgebrochen markiert."
+                        save_job_status(job["job_id"], job)
+                        job = json.loads(job_file.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            jobs.append(enrich_job_metrics(job))
+        except Exception:
+            pass
+
+    jobs = sorted(jobs, key=lambda x: x.get("started_at", x.get("created_at", "")), reverse=True)
+    return jobs
+
+
+def load_books():
+    books = []
+    for folder in sorted(BOOKS_DIR.glob("*")):
+        if folder.is_dir():
+            pdf_name = f"{folder.name}.pdf"
+            pdf_exists = (PDF_DIR / pdf_name).exists()
+            image_count = len(list(folder.glob("page_*.png")))
+            books.append({
+                "name": folder.name,
+                "image_count": image_count,
+                "pdf_exists": pdf_exists,
+                "pdf_name": pdf_name
+            })
+    return books
+
+
+def load_pdfs():
+    pdfs = []
+    for pdf_file in sorted(PDF_DIR.glob("*.pdf")):
+        pdfs.append({
+            "name": pdf_file.name
+        })
+    return pdfs
+
+
+def load_review_items():
+    items = []
+
+    for book_dir in sorted(BOOKS_DIR.glob("*")):
+        if not book_dir.is_dir():
+            continue
+
+        family_units_path = book_dir / "family_units_book.json"
+        if not family_units_path.exists():
+            continue
+
+        try:
+            data = json.loads(family_units_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        pages = data.get("pages", [])
+        if not isinstance(pages, list):
+            continue
+
+        for page in pages:
+            family_units = page.get("family_units", [])
+            if not isinstance(family_units, list):
+                continue
+
+            for unit in family_units:
+                if not isinstance(unit, dict):
+                    continue
+
+                uncertainties = unit.get("uncertainties", [])
+                if not isinstance(uncertainties, list):
+                    uncertainties = []
+
+                confidence = unit.get("confidence", 0.0)
+                try:
+                    confidence = float(confidence or 0.0)
+                except Exception:
+                    confidence = 0.0
+
+                if not uncertainties and confidence >= 0.7:
+                    continue
+
+                event = unit.get("event", {}) or {}
+                source = unit.get("source", {}) or {}
+                persons = unit.get("persons", []) or []
+
+                items.append({
+                    "book_name": book_dir.name,
+                    "unit_id": unit.get("unit_id"),
+                    "source_file": source.get("source_file"),
+                    "source_image": source.get("source_image"),
+                    "entry_index": source.get("entry_index"),
+                    "entry_label": source.get("entry_label"),
+                    "event_type": event.get("type"),
+                    "date_text": event.get("date_text"),
+                    "language": event.get("language"),
+                    "place": event.get("place"),
+                    "summary": unit.get("summary"),
+                    "genealogical_notes": unit.get("genealogical_notes"),
+                    "uncertainties": uncertainties,
+                    "confidence": confidence,
+                    "review_status": unit.get("review_status", "unreviewed"),
+                    "persons": persons,
+                })
+
+    items.sort(
+        key=lambda x: (
+            x.get("book_name") or "",
+            x.get("source_image") or "",
+            x.get("entry_index") or 0,
+        )
+    )
+    return items
+
+
+@app.route("/")
+def index():
+    cleanup_old_jobs()
+    books = load_books()
+    jobs = load_all_jobs()
+    version_info = load_version_info()
+    return render_template(
+        "index.html",
+        active_page="start",
+        books=books,
+        jobs=jobs,
+        pdfs=[],
+        review_items=[],
+        auto_refresh=True,
+        version=version_info["text"],
+        version_info=version_info
+    )
+
+
+@app.route("/books")
+def books_overview():
+    cleanup_old_jobs()
+    books = load_books()
+    version_info = load_version_info()
+    return render_template(
+        "index.html",
+        active_page="books",
+        books=books,
+        jobs=[],
+        pdfs=[],
+        review_items=[],
+        auto_refresh=False,
+        version=version_info["text"],
+        version_info=version_info
+    )
+
+
+@app.route("/pdfs")
+def pdfs_overview():
+    cleanup_old_jobs()
+    pdfs = load_pdfs()
+    version_info = load_version_info()
+    return render_template(
+        "index.html",
+        active_page="pdfs",
+        books=[],
+        jobs=[],
+        pdfs=pdfs,
+        review_items=[],
+        auto_refresh=False,
+        version=version_info["text"],
+        version_info=version_info
+    )
+
+
+@app.route("/jobs")
+def jobs_overview():
+    cleanup_old_jobs()
+    jobs = load_all_jobs()
+    version_info = load_version_info()
+    return render_template(
+        "index.html",
+        active_page="jobs",
+        books=[],
+        jobs=jobs,
+        pdfs=[],
+        review_items=[],
+        auto_refresh=True,
+        version=version_info["text"],
+        version_info=version_info
+    )
+
+
+@app.route("/review")
+def review_overview():
+    cleanup_old_jobs()
+    version_info = load_version_info()
+    return render_template(
+        "index.html",
+        active_page="review",
+        books=[],
+        jobs=[],
+        pdfs=[],
+        review_items=load_review_items(),
+        auto_refresh=False,
+        version=version_info["text"],
+        version_info=version_info
+    )
+
+
+@app.route("/api/review")
+def api_review():
+    return jsonify(load_review_items())
+
+
+@app.route("/start", methods=["POST"])
+def start_download():
+    url = request.form.get("book_url", "").strip()
+
+    if not url:
+        return redirect("/")
+
+    job_id = str(uuid.uuid4())[:8]
+    manual_book_name = request.form.get("book_name", "").strip()
+
+    start_page, end_page = normalize_page_range(
+        request.form.get("start_page"),
+        request.form.get("end_page"),
+    )
+    total_pages_target = calculate_total_pages_target(start_page, end_page, default_value=15)
+
+    internal_book_name = manual_book_name or f"book_{job_id}"
+    display_book_name = manual_book_name or "Automatisch ermitteln..."
+
+    started = now_iso()
+
+    status = {
+        "job_id": job_id,
+        "url": url,
+        "book_name": display_book_name,
+        "status": "gestartet",
+        "status_class": "starting",
+        "message": "Job wurde angelegt.",
+        "created_at": started,
+        "started_at": started,
+        "pages": 0,
+        "saved_count": 0,
+        "current_page": None,
+        "phase": "gestartet",
+        "total_pages_target": total_pages_target,
+        "start_page": start_page,
+        "end_page": end_page,
     }
+    save_job_status(job_id, status)
 
-    function filterList(inputId, listId, attrName) {
-        const input = document.getElementById(inputId);
-        if (!input) return;
+    def worker():
+        run_download_job(
+            job_id=job_id,
+            url=url,
+            book_name=internal_book_name,
+            save_job_status=save_job_status,
+            start_page=start_page,
+            end_page=end_page,
+        )
 
-        input.addEventListener("keyup", function () {
-            const value = input.value.toLowerCase();
-            const items = document.querySelectorAll("#" + listId + " li");
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
 
-            items.forEach(function (item) {
-                const text = (item.getAttribute(attrName) || "").toLowerCase();
-                item.style.display = text.includes(value) ? "" : "none";
-            });
-        });
-    }
+    return redirect("/")
 
-    filterList("bookSearch", "bookList", "data-book");
-    filterList("pdfSearch", "pdfList", "data-pdf");
 
-    function escapeHtml(text) {
-        return String(text || "")
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#039;");
-    }
+@app.route("/job/<job_id>")
+def job_status(job_id):
+    status = load_job_status(job_id)
+    if not status:
+        return jsonify({"error": "Job nicht gefunden"}), 404
+    return jsonify(status)
 
-    function normalizeStatusClass(status) {
-        const value = String(status || "").toLowerCase();
 
-        if (value === "gestartet" || value === "starting") return "gestartet";
-        if (value === "läuft" || value === "laeuft" || value === "running") return "läuft";
-        if (value === "fertig" || value === "finished") return "fertig";
-        if (value === "fehler" || value === "error") return "fehler";
-        if (value === "abgebrochen" || value === "cancelled" || value === "canceled") return "abgebrochen";
+@app.route("/api/jobs")
+def api_jobs():
+    cleanup_old_jobs()
+    return jsonify(load_all_jobs())
 
-        return value || "unbekannt";
-    }
 
-    function renderJobs(jobs) {
-        const containers = document.querySelectorAll("#jobList");
-        if (!containers.length) return;
+@app.route("/api/books")
+def api_books():
+    return jsonify(load_books())
 
-        containers.forEach(function (container) {
-            if (!jobs || !jobs.length) {
-                container.innerHTML = '<p id="noJobsText">Noch keine Jobs vorhanden.</p>';
-                return;
-            }
 
-            container.innerHTML = jobs.map(function (job) {
-                const status = normalizeStatusClass(job.status);
-                const pages = job.pages ?? job.saved_count ?? 0;
-                const showCurrentPage = !!job.current_page && !["fertig", "fehler", "abgebrochen"].includes(String(job.status || "").toLowerCase());
-                const currentPage = showCurrentPage ? `<span class="job-current-page">Aktuelle Seite: ${escapeHtml(job.current_page)}</span>` : "";
-                const phase = job.phase_label || "-";
-                const runtimeText = job.runtime_text || "-";
-                const avgText = job.avg_seconds_per_page_text || "-";
-                const remainingText = job.estimated_remaining_text || "-";
-                const startPage = job.start_page ?? "-";
-                const endPage = job.end_page ?? "-";
+@app.route("/books/<book_name>")
+def show_book(book_name):
+    book_dir = BOOKS_DIR / book_name
+    if not book_dir.exists():
+        return "Buch nicht gefunden", 404
 
-                return `
-                    <div class="job-item status-${escapeHtml(status)}">
-                        <div class="job-top">
-                            <div class="job-title">
-                                <span class="job-dot"></span>
-                                <strong>${escapeHtml(job.book_name || "Unbenannter Job")}</strong>
-                            </div>
-                            <div class="job-state">${escapeHtml(job.status || "")}</div>
-                        </div>
+    images = sorted([p.name for p in book_dir.glob("page_*.png")])
+    pdf_name = f"{book_name}.pdf"
+    pdf_exists = (PDF_DIR / pdf_name).exists()
+    version_info = load_version_info()
 
-                        <div class="job-message">${escapeHtml(job.message || "")}</div>
+    return render_template(
+        "book.html",
+        book_name=book_name,
+        images=images,
+        pdf_exists=pdf_exists,
+        pdf_name=pdf_name,
+        version=version_info["text"],
+        version_info=version_info
+    )
 
-                        <div class="job-progress">
-                            <span>Seiten: ${escapeHtml(pages)}</span>
-                            ${currentPage}
-                        </div>
 
-                        <div class="job-stats">
-                            <span class="job-stat">Phase: ${escapeHtml(phase)}</span>
-                            <span class="job-stat">Läuft seit: ${escapeHtml(runtimeText)}</span>
-                            <span class="job-stat">Ø / Seite: ${escapeHtml(avgText)}</span>
-                            <span class="job-stat">Restzeit: ${escapeHtml(remainingText)}</span>
-                        </div>
+@app.route("/books/<book_name>/<filename>")
+def serve_book_image(book_name, filename):
+    return send_from_directory(BOOKS_DIR / book_name, filename)
 
-                        <div class="job-meta">
-                            <span>Job-ID: ${escapeHtml(job.job_id || "")}</span>
-                            <span style="margin-left:12px;">Bereich: ${escapeHtml(startPage)}–${escapeHtml(endPage)}</span>
-                        </div>
-                    </div>
-                `;
-            }).join("");
-        });
-    }
 
-    function renderBooks(books) {
-        const list = document.getElementById("bookList");
-        const noBooksText = document.getElementById("noBooksText");
-        if (!list) return;
+@app.route("/pdf/<filename>")
+def serve_pdf(filename):
+    return send_from_directory(PDF_DIR, filename)
 
-        if (!books || !books.length) {
-            list.innerHTML = "";
-            if (noBooksText) {
-                noBooksText.style.display = "";
-            }
-            return;
-        }
 
-        if (noBooksText) {
-            noBooksText.style.display = "none";
-        }
-
-        list.innerHTML = books.map(function (book) {
-            const pdfLink = book.pdf_exists
-                ? ` — <a href="/pdf/${encodeURIComponent(book.pdf_name)}" target="_blank">PDF öffnen</a>`
-                : "";
-
-            return `
-                <li data-book="${escapeHtml((book.name || "").toLowerCase())}">
-                    <a href="/books/${encodeURIComponent(book.name || "")}">${escapeHtml(book.name || "")}</a>
-                    — Bilder: ${escapeHtml(book.image_count ?? 0)}
-                    ${pdfLink}
-                </li>
-            `;
-        }).join("");
-
-        const searchInput = document.getElementById("bookSearch");
-        if (searchInput && searchInput.value) {
-            const value = searchInput.value.toLowerCase();
-            const items = document.querySelectorAll("#bookList li");
-
-            items.forEach(function (item) {
-                const text = (item.getAttribute("data-book") || "").toLowerCase();
-                item.style.display = text.includes(value) ? "" : "none";
-            });
-        }
-    }
-
-    async function refreshJobs() {
-        try {
-            const response = await fetch("/api/jobs", { cache: "no-store" });
-            if (!response.ok) return;
-
-            const jobs = await response.json();
-            renderJobs(jobs);
-        } catch (err) {
-            console.warn("Job-Refresh fehlgeschlagen", err);
-        }
-    }
-
-    async function refreshBooks() {
-        try {
-            const response = await fetch("/api/books", { cache: "no-store" });
-            if (!response.ok) return;
-
-            const books = await response.json();
-            renderBooks(books);
-        } catch (err) {
-            console.warn("Bücher-Refresh fehlgeschlagen", err);
-        }
-    }
-
-    {% if auto_refresh %}
-    setInterval(function () {
-        if (!isTyping()) {
-            refreshJobs();
-            refreshBooks();
-        }
-    }, 2000);
-    {% endif %}
-})();
-</script>
-
-</body>
-</html>
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)
