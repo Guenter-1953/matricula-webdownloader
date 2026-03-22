@@ -493,6 +493,32 @@ def load_review_items():
     return items
 
 
+def load_person_name_stats(book_name):
+    path = BOOKS_DIR / book_name / "person_name_stats.json"
+    if not path.exists():
+        return None
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def load_persons_from_family_units(book_name):
+    path = BOOKS_DIR / book_name / "persons_from_family_units.json"
+    if not path.exists():
+        return None
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def normalize_person_lookup_name(name):
+    return str(name or "").strip().lower()
+
+
 @app.route("/")
 def index():
     cleanup_old_jobs()
@@ -680,6 +706,61 @@ def show_book(book_name):
         images=images,
         pdf_exists=pdf_exists,
         pdf_name=pdf_name,
+        version=version_info["text"],
+        version_info=version_info
+    )
+
+
+@app.route("/book/<book_name>/persons")
+def show_book_persons(book_name):
+    stats = load_person_name_stats(book_name)
+    version_info = load_version_info()
+
+    if stats is None:
+        return "person_name_stats.json nicht gefunden", 404
+
+    persons = stats.get("full_name_stats", [])
+    if not isinstance(persons, list):
+        persons = []
+
+    return render_template(
+        "persons.html",
+        book_name=book_name,
+        persons=persons,
+        version=version_info["text"],
+        version_info=version_info
+    )
+
+
+@app.route("/book/<book_name>/persons/<path:person_name>")
+def show_person_detail(book_name, person_name):
+    persons_data = load_persons_from_family_units(book_name)
+    version_info = load_version_info()
+
+    if persons_data is None:
+        return "persons_from_family_units.json nicht gefunden", 404
+
+    target = normalize_person_lookup_name(person_name)
+    all_persons = persons_data.get("persons", [])
+    if not isinstance(all_persons, list):
+        all_persons = []
+
+    matches = []
+    for person in all_persons:
+        if not isinstance(person, dict):
+            continue
+
+        full_name = normalize_person_lookup_name(person.get("full_name"))
+        name_original = normalize_person_lookup_name(person.get("name_original"))
+
+        if full_name == target or name_original == target:
+            matches.append(person)
+
+    return render_template(
+        "person_detail.html",
+        book_name=book_name,
+        person_name=person_name,
+        matches=matches,
         version=version_info["text"],
         version_info=version_info
     )
