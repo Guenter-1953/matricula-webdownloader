@@ -20,18 +20,40 @@ def derive_output_path(image_path: Path) -> Path:
     return derive_output_dir(image_path) / f"{image_path.stem}_page_events.json"
 
 
+def build_questions(confidence: float, text_length: int) -> list:
+    questions = []
+
+    if confidence < MIN_CONFIDENCE:
+        questions.append({
+            "field": "ocr_confidence",
+            "question": f"OCR-Confidence ist mit {confidence:.1f} zu niedrig. Soll die Seite per KI weiterverarbeitet werden?",
+            "status": "open",
+        })
+
+    if text_length < MIN_TEXT_LENGTH:
+        questions.append({
+            "field": "ocr_text_length",
+            "question": f"OCR-Text ist mit {text_length} Zeichen zu kurz. Ist die Seite handschriftlich/schwer lesbar und soll zur KI-Prüfung?",
+            "status": "open",
+        })
+
+    return questions
+
+
 def build_local_result(image_path: Path) -> dict:
     reader = LocalPageReader()
     result = reader.read_page(str(image_path))
 
     text = result.get("text", "").strip()
     confidence = float(result.get("confidence", 0.0))
+    text_length = len(text)
 
     use_local_result = (
-        confidence >= MIN_CONFIDENCE and len(text) >= MIN_TEXT_LENGTH
+        confidence >= MIN_CONFIDENCE and text_length >= MIN_TEXT_LENGTH
     )
 
     queue_result = None
+    questions = build_questions(confidence, text_length)
 
     if use_local_result:
         processing_status = "done_local"
@@ -39,13 +61,23 @@ def build_local_result(image_path: Path) -> dict:
     else:
         processing_status = "needs_review"
         next_action = "queue_for_manual_or_ai_review"
+
         queue_result = add_page(
             str(image_path),
             reason={
                 "min_confidence_required": MIN_CONFIDENCE,
                 "min_text_length_required": MIN_TEXT_LENGTH,
                 "actual_confidence": confidence,
-                "actual_text_length": len(text),
+                "actual_text_length": text_length,
+            },
+            review_type="page_review",
+            priority="normal",
+            source_json=str(derive_output_path(image_path)),
+            questions=questions,
+            decision={
+                "use_local_result": use_local_result,
+                "send_to_openai": False,
+                "recommended_next_step": "review_or_ai_page_reading",
             },
         )
 
@@ -56,6 +88,8 @@ def build_local_result(image_path: Path) -> dict:
         "next_action": next_action,
         "engine": result.get("engine", "tesseract"),
         "model": "tesseract-local",
+        "page_type": "",
+        "event_types_on_page": [],
         "entry_count": 0,
         "entries": [],
         "ocr_text": text,
@@ -68,14 +102,16 @@ def build_local_result(image_path: Path) -> dict:
                 "min_confidence_required": MIN_CONFIDENCE,
                 "min_text_length_required": MIN_TEXT_LENGTH,
                 "actual_confidence": confidence,
-                "actual_text_length": len(text),
+                "actual_text_length": text_length,
             },
         },
         "review_queue": queue_result,
+        "questions": questions,
         "notes": [
             "Zentrale Reader-Ausgabe.",
             "Lokaler OCR-Versuch wurde zuerst ausgeführt.",
-            "Schwache Seiten werden automatisch in die Review-Queue eingetragen."
+            "Schwache Seiten werden automatisch in die Review-Queue eingetragen.",
+            "Gemischte Bücher werden unterstützt; Ereignistypen werden später ergänzt."
         ],
     }
 
@@ -110,5 +146,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
