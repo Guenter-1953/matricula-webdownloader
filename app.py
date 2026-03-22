@@ -417,6 +417,81 @@ def load_pdfs():
     return pdfs
 
 
+def load_review_items():
+    items = []
+
+    for book_dir in sorted(BOOKS_DIR.glob("*")):
+        if not book_dir.is_dir():
+            continue
+
+        family_units_path = book_dir / "family_units_book.json"
+        if not family_units_path.exists():
+            continue
+
+        try:
+            data = json.loads(family_units_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        pages = data.get("pages", [])
+        if not isinstance(pages, list):
+            continue
+
+        for page in pages:
+            family_units = page.get("family_units", [])
+            if not isinstance(family_units, list):
+                continue
+
+            for unit in family_units:
+                if not isinstance(unit, dict):
+                    continue
+
+                uncertainties = unit.get("uncertainties", [])
+                if not isinstance(uncertainties, list):
+                    uncertainties = []
+
+                confidence = unit.get("confidence", 0.0)
+                try:
+                    confidence = float(confidence or 0.0)
+                except Exception:
+                    confidence = 0.0
+
+                if not uncertainties and confidence >= 0.7:
+                    continue
+
+                event = unit.get("event", {}) or {}
+                source = unit.get("source", {}) or {}
+                persons = unit.get("persons", []) or []
+
+                items.append({
+                    "book_name": book_dir.name,
+                    "unit_id": unit.get("unit_id"),
+                    "source_file": source.get("source_file"),
+                    "source_image": source.get("source_image"),
+                    "entry_index": source.get("entry_index"),
+                    "entry_label": source.get("entry_label"),
+                    "event_type": event.get("type"),
+                    "date_text": event.get("date_text"),
+                    "language": event.get("language"),
+                    "place": event.get("place"),
+                    "summary": unit.get("summary"),
+                    "genealogical_notes": unit.get("genealogical_notes"),
+                    "uncertainties": uncertainties,
+                    "confidence": confidence,
+                    "review_status": unit.get("review_status", "unreviewed"),
+                    "persons": persons,
+                })
+
+    items.sort(
+        key=lambda x: (
+            x.get("book_name") or "",
+            x.get("source_image") or "",
+            x.get("entry_index") or 0,
+        )
+    )
+    return items
+
+
 @app.route("/")
 def index():
     cleanup_old_jobs()
@@ -484,6 +559,26 @@ def jobs_overview():
         version=version_info["text"],
         version_info=version_info
     )
+
+
+@app.route("/review")
+def review_overview():
+    cleanup_old_jobs()
+    items = load_review_items()
+    version_info = load_version_info()
+    return render_template(
+        "review.html",
+        active_page="review",
+        items=items,
+        version=version_info["text"],
+        version_info=version_info
+    )
+
+
+@app.route("/api/review")
+def api_review():
+    items = load_review_items()
+    return jsonify(items)
 
 
 @app.route("/start", methods=["POST"])
