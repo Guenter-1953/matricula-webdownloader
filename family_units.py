@@ -50,7 +50,7 @@ def clean_name_text(raw_name: Optional[str]) -> Optional[str]:
 
 
 def infer_status_from_text(text: str, role: str) -> Optional[str]:
-    t = text.lower()
+    t = (text or "").lower()
 
     if "viduus" in t or "witwer" in t:
         return "witwer"
@@ -58,7 +58,7 @@ def infer_status_from_text(text: str, role: str) -> Optional[str]:
         return "witwe"
     if "virgo" in t or "ledig" in t:
         return "ledig"
-    if "adolescens" in t and role == "groom":
+    if "adolescens" in t and role in {"groom", "bridegroom", "braeutigam"}:
         return "ledig"
 
     return None
@@ -83,7 +83,7 @@ def infer_residence_from_text(text: str) -> Optional[str]:
 
 def infer_flags_from_text(text: str) -> List[str]:
     flags: List[str] = []
-    t = text.lower()
+    t = (text or "").lower()
 
     if "viduus" in t or "witwer" in t:
         flags.append("widower")
@@ -102,89 +102,77 @@ def infer_flags_from_text(text: str) -> List[str]:
     return unique_flags
 
 
-def extract_flags(person_data: Dict[str, Any], entry_details: Dict[str, Any], entry_notes: List[Any]) -> List[str]:
-    flags: List[str] = []
-
-    status = safe_str(person_data.get("status"))
-    person_notes_text = " ".join([str(x) for x in safe_list(person_data.get("notes")) if x is not None]).lower()
-    person_details_text = safe_str(person_data.get("details")) or ""
-    entry_details_text = json.dumps(entry_details, ensure_ascii=False).lower() if entry_details else ""
-    entry_notes_text = " ".join([str(x) for x in entry_notes if x is not None]).lower()
-
-    if status:
-        status_lower = status.lower()
-        if "witwer" in status_lower:
-            flags.append("widower")
-        if "witwe" in status_lower:
-            flags.append("widow")
-
-    for source_text in [person_notes_text, person_details_text.lower(), entry_details_text, entry_notes_text]:
-        for flag in infer_flags_from_text(source_text):
-            if flag not in flags:
-                flags.append(flag)
-
-    return flags
+def build_full_name_from_name(name: Optional[str]) -> Optional[str]:
+    cleaned = clean_name_text(name)
+    return cleaned or None
 
 
-def build_full_name(given_name: Optional[str], surname: Optional[str]) -> Optional[str]:
-    parts = [given_name, surname]
-    combined = " ".join([p for p in parts if p])
-    return combined if combined else None
+def normalize_role(role: Optional[str]) -> str:
+    role_text = (safe_str(role) or "").lower()
 
-
-def build_person_name_fields(person_data: Dict[str, Any]) -> Dict[str, Optional[str]]:
-    given_name = safe_str(person_data.get("given_name"))
-    surname = safe_str(person_data.get("surname"))
-    full_name = safe_str(person_data.get("full_name"))
-    name_original = safe_str(person_data.get("name_original"))
-
-    raw_name = safe_str(person_data.get("name"))
-    cleaned_raw_name = clean_name_text(raw_name)
-
-    if not full_name and (given_name or surname):
-        full_name = build_full_name(given_name, surname)
-
-    if not full_name and cleaned_raw_name:
-        full_name = cleaned_raw_name
-
-    if not name_original and raw_name:
-        name_original = raw_name
-
-    return {
-        "full_name": full_name,
-        "given_name": given_name,
-        "surname": surname,
-        "name_original": name_original,
+    role_map = {
+        "kind": "child",
+        "kindesvater": "father",
+        "vater": "father",
+        "mutter": "mother",
+        "pate": "godparent",
+        "patin": "godparent",
+        "taufpate": "godparent",
+        "taufpatin": "godparent",
+        "braeutigam": "groom",
+        "bräutigam": "groom",
+        "groom": "groom",
+        "braut": "bride",
+        "bride": "bride",
+        "zeugen": "witness",
+        "zeuge": "witness",
+        "zeugin": "witness",
+        "pfarrer": "priest",
+        "priester": "priest",
+        "verstorbener": "deceased",
+        "verstorbene": "deceased",
+        "toter": "deceased",
+        "tote": "deceased",
     }
+
+    return role_map.get(role_text, role_text or "related_person")
 
 
 def make_person(
     role: str,
     person_data: Optional[Dict[str, Any]],
     unit_id: str,
-    entry_details: Optional[Dict[str, Any]] = None,
-    entry_notes: Optional[List[Any]] = None,
+    event_type: str,
+    notes_texts: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not isinstance(person_data, dict):
         return None
 
+    name = safe_str(person_data.get("name"))
+    if not name:
+        return None
+
     person_id = f"{unit_id}_person_{role}"
-    entry_details = entry_details or {}
-    entry_notes = entry_notes or []
+    notes_texts = notes_texts or []
 
-    name_fields = build_person_name_fields(person_data)
+    details_text = safe_str(person_data.get("details")) or ""
+    inferred_status = infer_status_from_text(details_text, role)
+    inferred_residence = infer_residence_from_text(details_text)
 
-    person_details_text = safe_str(person_data.get("details")) or ""
-    inferred_status = infer_status_from_text(person_details_text, role)
-    inferred_residence = infer_residence_from_text(person_details_text)
+    flags: List[str] = []
+    for source_text in [details_text] + notes_texts:
+        for flag in infer_flags_from_text(source_text):
+            if flag not in flags:
+                flags.append(flag)
 
     attributes = {
-        "age": safe_str(person_data.get("age")),
         "status": safe_str(person_data.get("status")) or inferred_status,
         "occupation": safe_str(person_data.get("occupation")),
         "residence": safe_str(person_data.get("residence")) or inferred_residence,
         "birth_place": safe_str(person_data.get("birth_place")),
-        "details_text": person_details_text or None,
+        "details_text": details_text or None,
+        "confidence": person_data.get("confidence"),
+        "event_type_context": event_type,
     }
 
     clean_attributes = {}
@@ -194,164 +182,146 @@ def make_person(
 
     person = {
         "person_id": person_id,
-        "role": role,
-        "full_name": name_fields["full_name"],
-        "given_name": name_fields["given_name"],
-        "surname": name_fields["surname"],
-        "name_original": name_fields["name_original"],
+        "role": normalize_role(role),
+        "full_name": build_full_name_from_name(name),
+        "given_name": safe_str(person_data.get("given_name")),
+        "surname": safe_str(person_data.get("surname")),
+        "name_original": name,
         "sex": safe_str(person_data.get("sex")),
         "attributes": clean_attributes,
-        "flags": extract_flags(person_data, entry_details, entry_notes),
+        "flags": flags,
         "raw": person_data,
     }
 
     return person
 
 
-def extract_persons_from_marriage_entry(entry: Dict[str, Any], unit_id: str) -> List[Dict[str, Any]]:
+def normalize_persons_list(entry: Dict[str, Any], unit_id: str, event_type: str) -> List[Dict[str, Any]]:
     persons: List[Dict[str, Any]] = []
-    entry_details = entry.get("details", {}) if isinstance(entry.get("details"), dict) else {}
-    entry_notes = safe_list(entry.get("notes"))
+    raw_persons = safe_list(entry.get("persons"))
+    notes_texts = [str(x) for x in safe_list(entry.get("notes")) if x is not None]
+    seen_ids = set()
 
-    groom_data = entry.get("groom") if isinstance(entry.get("groom"), dict) else {}
-    bride_data = entry.get("bride") if isinstance(entry.get("bride"), dict) else {}
+    for index, person_data in enumerate(raw_persons, start=1):
+        if isinstance(person_data, str):
+            person_data = {
+                "role": f"related_person_{index}",
+                "name": person_data,
+            }
 
-    groom = make_person("groom", groom_data, unit_id, entry_details, entry_notes)
-    bride = make_person("bride", bride_data, unit_id, entry_details, entry_notes)
+        if not isinstance(person_data, dict):
+            continue
 
-    if groom:
-        if not groom.get("sex"):
-            groom["sex"] = "M"
-        persons.append(groom)
+        role = safe_str(person_data.get("role")) or f"related_person_{index}"
+        person = make_person(role, person_data, unit_id, event_type, notes_texts)
+        if not person:
+            continue
 
-    if bride:
-        if not bride.get("sex"):
-            bride["sex"] = "F"
-        persons.append(bride)
+        person_id = person.get("person_id")
+        if person_id in seen_ids:
+            continue
 
-    groom_father = make_person("groom_father", groom_data.get("father"), unit_id, entry_details, entry_notes)
-    groom_mother = make_person("groom_mother", groom_data.get("mother"), unit_id, entry_details, entry_notes)
-    bride_father = make_person("bride_father", bride_data.get("father"), unit_id, entry_details, entry_notes)
-    bride_mother = make_person("bride_mother", bride_data.get("mother"), unit_id, entry_details, entry_notes)
-
-    if groom_father:
-        if not groom_father.get("sex"):
-            groom_father["sex"] = "M"
-        persons.append(groom_father)
-
-    if groom_mother:
-        if not groom_mother.get("sex"):
-            groom_mother["sex"] = "F"
-        persons.append(groom_mother)
-
-    if bride_father:
-        if not bride_father.get("sex"):
-            bride_father["sex"] = "M"
-        persons.append(bride_father)
-
-    if bride_mother:
-        if not bride_mother.get("sex"):
-            bride_mother["sex"] = "F"
-        persons.append(bride_mother)
+        seen_ids.add(person_id)
+        persons.append(person)
 
     return persons
 
 
-def extract_relationships_from_marriage_entry(entry: Dict[str, Any], unit_id: str) -> List[Dict[str, Any]]:
+def extract_relationships(entry: Dict[str, Any], unit_id: str, persons: List[Dict[str, Any]], event_type: str) -> List[Dict[str, Any]]:
     relationships: List[Dict[str, Any]] = []
 
-    groom_id = f"{unit_id}_person_groom"
-    bride_id = f"{unit_id}_person_bride"
-    groom_father_id = f"{unit_id}_person_groom_father"
-    groom_mother_id = f"{unit_id}_person_groom_mother"
-    bride_father_id = f"{unit_id}_person_bride_father"
-    bride_mother_id = f"{unit_id}_person_bride_mother"
+    role_to_ids: Dict[str, List[str]] = {}
+    for person in persons:
+        role = person.get("role") or ""
+        role_to_ids.setdefault(role, []).append(person["person_id"])
 
-    groom_data = entry.get("groom") if isinstance(entry.get("groom"), dict) else {}
-    bride_data = entry.get("bride") if isinstance(entry.get("bride"), dict) else {}
+    event_type_lower = (event_type or "").lower()
 
-    if isinstance(entry.get("groom"), dict) and isinstance(entry.get("bride"), dict):
-        relationships.append({
-            "type": "spouse",
-            "person1_id": groom_id,
-            "person2_id": bride_id,
-        })
+    if event_type_lower in {"trauung", "marriage"}:
+        groom_ids = role_to_ids.get("groom", [])
+        bride_ids = role_to_ids.get("bride", [])
+        if groom_ids and bride_ids:
+            relationships.append({
+                "type": "spouse",
+                "person1_id": groom_ids[0],
+                "person2_id": bride_ids[0],
+            })
 
-    if isinstance(groom_data.get("father"), dict):
-        relationships.append({
-            "type": "child_of",
-            "child_id": groom_id,
-            "parent_id": groom_father_id,
-        })
+    if event_type_lower in {"taufe", "baptism", "geburt"}:
+        child_ids = role_to_ids.get("child", [])
+        father_ids = role_to_ids.get("father", [])
+        mother_ids = role_to_ids.get("mother", [])
 
-    if isinstance(groom_data.get("mother"), dict):
-        relationships.append({
-            "type": "child_of",
-            "child_id": groom_id,
-            "parent_id": groom_mother_id,
-        })
-
-    if isinstance(bride_data.get("father"), dict):
-        relationships.append({
-            "type": "child_of",
-            "child_id": bride_id,
-            "parent_id": bride_father_id,
-        })
-
-    if isinstance(bride_data.get("mother"), dict):
-        relationships.append({
-            "type": "child_of",
-            "child_id": bride_id,
-            "parent_id": bride_mother_id,
-        })
+        if child_ids:
+            child_id = child_ids[0]
+            if father_ids:
+                relationships.append({
+                    "type": "child_of",
+                    "child_id": child_id,
+                    "parent_id": father_ids[0],
+                })
+            if mother_ids:
+                relationships.append({
+                    "type": "child_of",
+                    "child_id": child_id,
+                    "parent_id": mother_ids[0],
+                })
 
     return relationships
 
 
 def extract_event(entry: Dict[str, Any], unit_id: str) -> Dict[str, Any]:
-    details = entry.get("details", {})
-    if not isinstance(details, dict):
-        details = {}
+    places = safe_list(entry.get("places"))
+    place = None
 
-    place = safe_str(entry.get("place"))
-    if not place:
-        place = safe_str(details.get("place"))
+    for value in places:
+        value_str = safe_str(value)
+        if value_str:
+            place = value_str
+            break
 
     return {
         "event_id": f"{unit_id}_event_1",
-        "type": safe_str(entry.get("type")),
-        "date": entry.get("date"),
+        "type": safe_str(entry.get("event_type")) or "Unklar",
+        "date_text": safe_str(entry.get("date_text")),
+        "language": safe_str(entry.get("language")),
         "place": place,
-        "details": details,
+        "page_type": safe_str(entry.get("page_type")),
+        "is_header_or_meta": bool(entry.get("is_header_or_meta", False)),
     }
 
 
-def build_family_unit(entry: Dict[str, Any], source_path: str, entry_index: int) -> Dict[str, Any]:
+def build_family_unit(entry: Dict[str, Any], source_path: str, entry_index: int, source_image: Optional[str]) -> Optional[Dict[str, Any]]:
+    if bool(entry.get("is_header_or_meta", False)):
+        return None
+
     short_uuid = uuid.uuid4().hex[:8]
     unit_id = f"fu_{entry_index:04d}_{short_uuid}"
 
-    entry_type = safe_str(entry.get("type"))
+    event_type = safe_str(entry.get("event_type")) or "Unklar"
+    persons = normalize_persons_list(entry, unit_id, event_type)
+    relationships = extract_relationships(entry, unit_id, persons, event_type)
 
     family_unit = {
         "unit_id": unit_id,
         "source": {
             "source_file": source_path,
+            "source_image": source_image,
             "entry_index": entry_index,
+            "entry_label": safe_str(entry.get("entry_label")),
         },
         "event": extract_event(entry, unit_id),
-        "persons": [],
-        "relationships": [],
-        "notes": safe_list(entry.get("notes")),
+        "persons": persons,
+        "relationships": relationships,
+        "summary": safe_str(entry.get("source_text_summary_german")),
+        "genealogical_notes": safe_str(entry.get("genealogical_notes_german")),
+        "uncertainties": [safe_str(x) for x in safe_list(entry.get("unsicherheiten")) if safe_str(x)],
+        "notes": [safe_str(x) for x in safe_list(entry.get("notes")) if safe_str(x)],
         "raw_text": safe_str(entry.get("raw_text")),
+        "confidence": entry.get("confidence", 0.0),
+        "review_status": "unreviewed",
+        "raw_entry": entry,
     }
-
-    if entry_type == "marriage":
-        family_unit["persons"] = extract_persons_from_marriage_entry(entry, unit_id)
-        family_unit["relationships"] = extract_relationships_from_marriage_entry(entry, unit_id)
-    else:
-        family_unit["notes"].append(
-            f"Entry type '{entry_type}' wird in dieser Version noch nicht speziell verarbeitet."
-        )
 
     return family_unit
 
@@ -359,6 +329,7 @@ def build_family_unit(entry: Dict[str, Any], source_path: str, entry_index: int)
 def convert_page_to_family_units(data: Dict[str, Any], source_path: str) -> Dict[str, Any]:
     entries = data.get("entries", [])
     family_units: List[Dict[str, Any]] = []
+    source_image = safe_str(data.get("source_image"))
 
     if not isinstance(entries, list):
         entries = []
@@ -366,12 +337,16 @@ def convert_page_to_family_units(data: Dict[str, Any], source_path: str) -> Dict
     for index, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict):
             continue
-        family_unit = build_family_unit(entry, source_path, index)
-        family_units.append(family_unit)
+
+        family_unit = build_family_unit(entry, source_path, index, source_image)
+        if family_unit is not None:
+            family_units.append(family_unit)
 
     result = {
-        "source_image": data.get("source_image"),
+        "source_image": source_image,
         "source_file": source_path,
+        "page_type": safe_str(data.get("page_type")),
+        "event_types_on_page": safe_list(data.get("event_types_on_page")),
         "family_units_count": len(family_units),
         "family_units": family_units,
     }
