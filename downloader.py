@@ -60,11 +60,6 @@ def log(msg: str):
 class PauseController:
     """
     Steuert adaptive, aber immer sichere Wartezeiten.
-
-    Grundidee:
-    - normaler Bereich: 12–18 Sekunden
-    - bei Fehlern/Störungen: langsamer
-    - nach mehreren stabilen Seiten wieder zurück Richtung Normalwert
     """
 
     def __init__(self):
@@ -89,6 +84,11 @@ class PauseController:
         max_pause = SAFE_MAX_PAUSE_SECONDS + (self.penalty_level * 3.0)
         return round(random.uniform(min_pause, max_pause), 2)
 
+    def skip_pause(self) -> float:
+        min_pause = max(6.0, SAFE_MIN_PAUSE_SECONDS - 4.0) + self.penalty_level
+        max_pause = max(9.0, SAFE_MAX_PAUSE_SECONDS - 5.0) + (self.penalty_level * 1.5)
+        return round(random.uniform(min_pause, max_pause), 2)
+
     def short_pause(self) -> float:
         min_pause = SAFE_SHORT_MIN_SECONDS + (self.penalty_level * 0.4)
         max_pause = SAFE_SHORT_MAX_SECONDS + (self.penalty_level * 0.8)
@@ -103,6 +103,10 @@ PAUSE_CONTROLLER = PauseController()
 
 def human_pause() -> float:
     return PAUSE_CONTROLLER.human_pause()
+
+
+def skip_pause() -> float:
+    return PAUSE_CONTROLLER.skip_pause()
 
 
 def short_pause() -> float:
@@ -270,8 +274,9 @@ def detect_book_type_from_text(text: str) -> str:
     has_taufe = "tauf" in lower or "bapt" in lower
     has_trauung = "trau" in lower or "heirat" in lower or "matrimon" in lower
     has_tod = "tod" in lower or "sterb" in lower or "mortu" in lower
+    has_firmung = "firm" in lower
 
-    count = sum([has_taufe, has_trauung, has_tod])
+    count = sum([has_taufe, has_trauung, has_tod, has_firmung])
 
     if count >= 2:
         return "Kirchenbuch"
@@ -281,6 +286,8 @@ def detect_book_type_from_text(text: str) -> str:
         return "Trauungsbuch"
     if has_tod:
         return "Totenbuch"
+    if has_firmung:
+        return "Firmbuch"
 
     return "Kirchenbuch"
 
@@ -480,10 +487,8 @@ def improve_book_meta_from_title(meta: dict, dom_candidates: dict) -> dict:
     text = meta.get("dom_title_text", "") or ""
     page_title = normalize_whitespace(dom_candidates.get("page_title", "") or "")
 
-    # Erst das kurze, saubere page_title auswerten
     meta = parse_from_page_title(meta, page_title)
 
-    # Danach nur fehlende/ergänzende Felder aus dem langen Text holen
     if not meta.get("pfarre_ort") or normalize_compare_value(meta.get("pfarre_ort")) in {"de_ful3_jdw", "unbekannt", ""}:
         place_value = extract_field_from_title_text(text, "Pfarre/Ort")
         if place_value:
@@ -543,97 +548,6 @@ def make_unique_target_dir(base_name: str) -> Path:
         counter += 1
 
 
-def build_book_identity(meta: dict, source_url: str) -> dict:
-    return {
-        "normalized_source_url": normalize_source_url(source_url),
-        "country": normalize_compare_value(meta.get("country")),
-        "bistum": normalize_compare_value(meta.get("bistum")),
-        "pfarre": normalize_compare_value(meta.get("pfarre_ort")),
-        "signatur": normalize_compare_value(meta.get("signatur")),
-    }
-
-
-def load_book_json(book_dir: Path) -> dict | None:
-    path = book_dir / "book.json"
-    if not path.exists():
-        return None
-
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception as e:
-        log(f"book.json konnte nicht gelesen werden in {book_dir}: {e}")
-        return None
-
-
-def is_same_book_identity(existing_data: dict, wanted_identity: dict) -> bool:
-    existing_normalized_url = normalize_compare_value(
-        existing_data.get("normalized_source_url") or normalize_source_url(existing_data.get("source_url", ""))
-    )
-    wanted_normalized_url = normalize_compare_value(wanted_identity.get("normalized_source_url"))
-
-    if existing_normalized_url and wanted_normalized_url and existing_normalized_url == wanted_normalized_url:
-        return True
-
-    existing_country = normalize_compare_value(existing_data.get("country"))
-    existing_bistum = normalize_compare_value(existing_data.get("bistum"))
-    existing_pfarre = normalize_compare_value(existing_data.get("pfarre"))
-    existing_signatur = normalize_compare_value(existing_data.get("signatur"))
-
-    return (
-        existing_country == wanted_identity.get("country")
-        and existing_bistum == wanted_identity.get("bistum")
-        and existing_pfarre == wanted_identity.get("pfarre")
-        and existing_signatur == wanted_identity.get("signatur")
-        and bool(existing_signatur)
-    )
-
-
-def find_existing_book_dir(meta: dict, source_url: str, exclude_dir: Path | None = None) -> Path | None:
-    wanted_identity = build_book_identity(meta, source_url)
-
-    for candidate in sorted(BOOKS_DIR.glob("*")):
-        if not candidate.is_dir():
-            continue
-        if exclude_dir is not None and candidate.resolve() == exclude_dir.resolve():
-            continue
-
-        existing_data = load_book_json(candidate)
-        if not existing_data:
-            continue
-
-        if is_same_book_identity(existing_data, wanted_identity):
-            log(f"Bestehender Buchordner erkannt: {candidate}")
-            return candidate
-
-    return None
-
-
-def cleanup_empty_dir(path: Path):
-    try:
-        if path.exists() and path.is_dir() and not any(path.iterdir()):
-            path.rmdir()
-            log(f"Leerer Ordner entfernt: {path}")
-    except Exception as e:
-        log(f"Leerer Ordner konnte nicht entfernt werden {path}: {e}")
-
-
-def maybe_attach_to_existing_book(book_dir: Path, book_name: str, pdf_path: Path, meta: dict, source_url: str):
-    existing_dir = find_existing_book_dir(meta=meta, source_url=source_url, exclude_dir=book_dir)
-    if existing_dir is None:
-        return book_dir, book_name, pdf_path, False
-
-    if existing_dir.resolve() == book_dir.resolve():
-        return book_dir, book_name, pdf_path, False
-
-    cleanup_empty_dir(book_dir)
-
-    existing_name = existing_dir.name
-    existing_pdf_path = PDF_DIR / f"{existing_name}.pdf"
-
-    log(f"Neue Seiten werden an bestehenden Buchordner angehängt: {existing_name}")
-    return existing_dir, existing_name, existing_pdf_path, True
-
-
 def build_display_name_from_meta(meta: dict) -> str:
     parts = [
         sanitize_folder_part(meta.get("pfarre_ort") or "unbekannt", max_len=40),
@@ -653,6 +567,15 @@ def build_display_name_from_meta(meta: dict) -> str:
     return truncate_folder_name(name)
 
 
+def cleanup_empty_dir(path: Path):
+    try:
+        if path.exists() and path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+            log(f"Leerer Ordner entfernt: {path}")
+    except Exception as e:
+        log(f"Leerer Ordner konnte nicht entfernt werden {path}: {e}")
+
+
 def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: dict):
     log(f"Rename-Prüfung: aktueller book_name={book_name}")
 
@@ -663,18 +586,19 @@ def maybe_rename_book_dir(book_dir: Path, book_name: str, pdf_path: Path, meta: 
         return book_dir, book_name, pdf_path, False, book_name
 
     if not should_auto_rename(book_name):
-        log("Kein Auto-Rename, da Buchname kein technischer Platzhalter ist")
         return book_dir, book_name, pdf_path, False, display_name
 
     target_dir = make_unique_target_dir(display_name)
     final_fs_name = target_dir.name
 
-    if target_dir == book_dir:
+    if target_dir.resolve() == book_dir.resolve():
         log("Rename nicht nötig, Zielordner entspricht aktuellem Ordner")
         return book_dir, book_name, pdf_path, False, display_name
 
     shutil.move(str(book_dir), str(target_dir))
     log(f"Buchordner umbenannt: {book_dir.name} -> {final_fs_name}")
+
+    cleanup_empty_dir(book_dir)
 
     return target_dir, final_fs_name, PDF_DIR / f"{final_fs_name}.pdf", True, display_name
 
@@ -864,7 +788,7 @@ def save_viewer_screenshot(page, raw_path: Path, final_path: Path, debug_job_dir
 
 def create_page_metadata(
     book_dir: Path,
-    local_page_number: int,
+    page_number: int,
     source_page_number: int,
     image_path: Path,
     source_url: str,
@@ -873,22 +797,22 @@ def create_page_metadata(
     try:
         create_page_json_for_page(
             book_folder=str(book_dir),
-            page_number=local_page_number,
+            page_number=page_number,
             image_file=image_path.name,
             image_path=str(image_path),
             ocr_text=ocr_text or "",
             source_url=source_url,
         )
 
-        page_json_path = book_dir / f"page_{local_page_number:04d}.json"
+        page_json_path = book_dir / f"page_{page_number:04d}.json"
         if page_json_path.exists():
             data = json.loads(page_json_path.read_text(encoding="utf-8"))
             data["source_page_number"] = source_page_number
             page_json_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        log(f"page_{local_page_number:04d}.json erzeugt (source_page_number={source_page_number})")
+        log(f"page_{page_number:04d}.json erzeugt (source_page_number={source_page_number})")
     except Exception as e:
-        log(f"page.json konnte nicht erzeugt werden für lokale Seite {local_page_number}: {e}")
+        log(f"page.json konnte nicht erzeugt werden für Seite {page_number}: {e}")
 
 
 def update_status(
@@ -1095,15 +1019,14 @@ def process_source_page(
     page,
     book_dir: Path,
     debug_job_dir: Path,
-    local_page_num: int,
-    source_page_num: int,
+    page_number: int,
     current_page_url: str,
 ) -> tuple[bool, str]:
-    final_page_path = book_dir / f"page_{local_page_num:04d}.png"
-    final_json_path = book_dir / f"page_{local_page_num:04d}.json"
+    final_page_path = book_dir / f"page_{page_number:04d}.png"
+    final_json_path = book_dir / f"page_{page_number:04d}.json"
 
     if final_page_path.exists() and final_json_path.exists():
-        log(f"Seite {local_page_num:04d} existiert bereits, überspringe erneutes Speichern")
+        log(f"Seite {page_number:04d} existiert bereits, überspringe erneutes Speichern")
         return True, "already_exists"
 
     page.goto(current_page_url, wait_until="domcontentloaded")
@@ -1112,24 +1035,24 @@ def process_source_page(
 
     if page_shows_service_unavailable(page):
         PAUSE_CONTROLLER.register_problem()
-        log(f"Service-Unavailable im HTML erkannt bei Quellseite {source_page_num}")
+        log(f"Service-Unavailable im HTML erkannt bei Quellseite {page_number}")
         return False, "service_unavailable_html"
 
-    raw_page_path = debug_job_dir / f"raw_source_{source_page_num}.png"
+    raw_page_path = debug_job_dir / f"raw_source_{page_number}.png"
 
     save_viewer_screenshot(
         page=page,
         raw_path=raw_page_path,
         final_path=final_page_path,
         debug_job_dir=debug_job_dir,
-        page_num=source_page_num,
+        page_num=page_number,
     )
 
     page_ocr_text, page_ocr_error = read_page_ocr_debug(raw_page_path)
 
     if contains_service_unavailable_text(page_ocr_text):
         PAUSE_CONTROLLER.register_problem()
-        log(f"Service-Unavailable im OCR erkannt bei Quellseite {source_page_num}")
+        log(f"Service-Unavailable im OCR erkannt bei Quellseite {page_number}")
         try:
             if final_page_path.exists():
                 final_page_path.unlink()
@@ -1137,18 +1060,18 @@ def process_source_page(
             pass
         return False, "service_unavailable_ocr"
 
-    write_text_file(book_dir / f"page_{local_page_num:04d}.ocr.txt", page_ocr_text or "")
-    write_text_file(debug_job_dir / f"page_{local_page_num:04d}.ocr.txt", page_ocr_text or "")
+    write_text_file(book_dir / f"page_{page_number:04d}.ocr.txt", page_ocr_text or "")
+    write_text_file(debug_job_dir / f"page_{page_number:04d}.ocr.txt", page_ocr_text or "")
 
     if page_ocr_error:
-        log(f"OCR-Debug Fehler Quellseite {source_page_num}: {page_ocr_error}")
+        log(f"OCR-Debug Fehler Quellseite {page_number}: {page_ocr_error}")
     else:
-        log(f"OCR-Debug Zeichen Quellseite {source_page_num}: {len(page_ocr_text or '')}")
+        log(f"OCR-Debug Zeichen Quellseite {page_number}: {len(page_ocr_text or '')}")
 
     create_page_metadata(
         book_dir=book_dir,
-        local_page_number=local_page_num,
-        source_page_number=source_page_num,
+        page_number=page_number,
+        source_page_number=page_number,
         image_path=final_page_path,
         source_url=current_page_url,
         ocr_text=page_ocr_text,
@@ -1174,8 +1097,7 @@ def retry_failed_pages(
     remaining_failed = []
 
     for failed in failed_pages:
-        source_page_num = failed["source_page_number"]
-        local_page_num = source_page_num
+        page_number = failed["page_number"]
         current_page_url = failed["source_url"]
 
         update_status(
@@ -1183,9 +1105,9 @@ def retry_failed_pages(
             job_id=job_id,
             book_name=book_name,
             status="running",
-            message=f"Nachladeversuch für Quellseite {source_page_num} ...",
+            message=f"Nachladeversuch für Quellseite {page_number} ...",
             saved_count=saved_count,
-            current_page=source_page_num,
+            current_page=page_number,
             total_pages_target=total_pages_target,
             start_page=requested_start_page,
             end_page=requested_end_page,
@@ -1195,18 +1117,13 @@ def retry_failed_pages(
         reason = "retry_not_started"
 
         for attempt in range(1, 4):
-            log(
-                f"Nachladeversuch {attempt}/3 für "
-                f"Seite {local_page_num:04d} "
-                f"(Quelle {source_page_num})"
-            )
+            log(f"Nachladeversuch {attempt}/3 für Seite {page_number:04d}")
 
             success, reason = process_source_page(
                 page=page,
                 book_dir=book_dir,
                 debug_job_dir=debug_job_dir,
-                local_page_num=local_page_num,
-                source_page_num=source_page_num,
+                page_number=page_number,
                 current_page_url=current_page_url,
             )
 
@@ -1217,9 +1134,9 @@ def retry_failed_pages(
                     job_id=job_id,
                     book_name=book_name,
                     status="running",
-                    message=f"Nachgeladen: Seite {local_page_num:04d} (Quelle {source_page_num})",
+                    message=f"Nachgeladen: Seite {page_number:04d}",
                     saved_count=saved_count,
-                    current_page=source_page_num,
+                    current_page=page_number,
                     total_pages_target=total_pages_target,
                     start_page=requested_start_page,
                     end_page=requested_end_page,
@@ -1280,7 +1197,8 @@ def run_download_job(
     start_page=None,
     end_page=None,
 ):
-    book_dir = BOOKS_DIR / book_name
+    original_book_dir = BOOKS_DIR / book_name
+    book_dir = original_book_dir
     pdf_path = PDF_DIR / f"{book_name}.pdf"
     debug_job_dir = DEBUG_DIR / f"{book_name}_{job_id}"
 
@@ -1358,24 +1276,24 @@ def run_download_job(
             meta = enrich_meta_from_dom(meta, dom_candidates)
             meta = improve_book_meta_from_title(meta, dom_candidates)
 
-            book_dir, attached_book_name, attached_pdf_path, attached = maybe_attach_to_existing_book(
+            old_book_name = book_name
+            book_dir, fs_book_name, pdf_path, renamed, display_name = maybe_rename_book_dir(
                 book_dir=book_dir,
                 book_name=book_name,
                 pdf_path=pdf_path,
                 meta=meta,
-                source_url=url,
             )
 
-            if attached:
-                book_name = attached_book_name
-                pdf_path = attached_pdf_path
-
+            if renamed:
+                log(f"Dateisystem-Name geändert: {old_book_name} -> {fs_book_name}")
+                log(f"Anzeigename für Job: {display_name}")
+                book_name = display_name
                 update_status(
                     save_job_status=save_job_status,
                     job_id=job_id,
                     book_name=book_name,
                     status="running",
-                    message="Bestehender Buchordner erkannt, neue Seiten werden angehängt.",
+                    message="Buchname wurde automatisch ermittelt.",
                     saved_count=0,
                     current_page=effective_start_page,
                     total_pages_target=total_pages_to_fetch,
@@ -1383,17 +1301,7 @@ def run_download_job(
                     end_page=requested_end_page,
                 )
             else:
-                old_book_name = book_name
-                book_dir, fs_book_name, pdf_path, renamed, display_name = maybe_rename_book_dir(
-                    book_dir=book_dir,
-                    book_name=book_name,
-                    pdf_path=pdf_path,
-                    meta=meta,
-                )
-
-                if renamed:
-                    log(f"Dateisystem-Name geändert: {old_book_name} -> {fs_book_name}")
-                    log(f"Anzeigename für Job: {display_name}")
+                if display_name and display_name != old_book_name:
                     book_name = display_name
                     update_status(
                         save_job_status=save_job_status,
@@ -1407,26 +1315,11 @@ def run_download_job(
                         start_page=requested_start_page,
                         end_page=requested_end_page,
                     )
-                else:
-                    if display_name and display_name != old_book_name:
-                        log(f"Kein Rename nötig/möglich, aber Anzeigename wird gesetzt: {display_name}")
-                        book_name = display_name
-                        update_status(
-                            save_job_status=save_job_status,
-                            job_id=job_id,
-                            book_name=book_name,
-                            status="running",
-                            message="Buchname wurde automatisch ermittelt.",
-                            saved_count=0,
-                            current_page=effective_start_page,
-                            total_pages_target=total_pages_to_fetch,
-                            start_page=requested_start_page,
-                            end_page=requested_end_page,
-                        )
-                    else:
-                        log(f"Jobname unverändert: {book_name}")
 
             save_book_metadata(book_dir, meta, url)
+
+            if original_book_dir != book_dir:
+                cleanup_empty_dir(original_book_dir)
 
             if requested_start_page is not None:
                 content_start_page = requested_start_page
@@ -1448,31 +1341,31 @@ def run_download_job(
             failed_pages = []
 
             for offset in range(total_pages_to_fetch):
-                source_page_num = content_start_page + offset
-                local_page_num = source_page_num
+                page_number = content_start_page + offset
 
-                if requested_end_page is not None and source_page_num > requested_end_page:
+                if requested_end_page is not None and page_number > requested_end_page:
                     break
 
-                current_page_url = make_page_url(url, source_page_num)
+                current_page_url = make_page_url(url, page_number)
 
-                final_page_path = book_dir / f"page_{local_page_num:04d}.png"
-                final_json_path = book_dir / f"page_{local_page_num:04d}.json"
+                final_page_path = book_dir / f"page_{page_number:04d}.png"
+                final_json_path = book_dir / f"page_{page_number:04d}.json"
 
                 if final_page_path.exists() and final_json_path.exists():
-                    log(f"Seite {local_page_num:04d} existiert bereits → überspringe")
+                    log(f"Seite {page_number:04d} existiert bereits → überspringe")
                     update_status(
                         save_job_status=save_job_status,
                         job_id=job_id,
                         book_name=book_name,
                         status="running",
-                        message=f"Seite {local_page_num:04d} existiert bereits und wurde übersprungen.",
+                        message=f"Seite {page_number:04d} existiert bereits und wurde übersprungen.",
                         saved_count=saved_count,
-                        current_page=source_page_num,
+                        current_page=page_number,
                         total_pages_target=total_pages_to_fetch,
                         start_page=requested_start_page,
                         end_page=requested_end_page,
                     )
+                    time.sleep(skip_pause())
                     continue
 
                 update_status(
@@ -1480,31 +1373,30 @@ def run_download_job(
                     job_id=job_id,
                     book_name=book_name,
                     status="running",
-                    message=f"Lade Quellseite {source_page_num} ...",
+                    message=f"Lade Quellseite {page_number} ...",
                     saved_count=saved_count,
-                    current_page=source_page_num,
+                    current_page=page_number,
                     total_pages_target=total_pages_to_fetch,
                     start_page=requested_start_page,
                     end_page=requested_end_page,
                 )
 
-                log(f"Lade Quellseite {source_page_num}: {current_page_url}")
+                log(f"Lade Quellseite {page_number}: {current_page_url}")
 
                 success, reason = process_source_page(
                     page=page,
                     book_dir=book_dir,
                     debug_job_dir=debug_job_dir,
-                    local_page_num=local_page_num,
-                    source_page_num=source_page_num,
+                    page_number=page_number,
                     current_page_url=current_page_url,
                 )
 
                 if success:
                     saved_count += 1
                     if reason == "already_exists":
-                        message = f"Seite {local_page_num:04d} war bereits vorhanden."
+                        message = f"Seite {page_number:04d} war bereits vorhanden."
                     else:
-                        message = f"Seite {local_page_num:04d} gespeichert (Quelle {source_page_num})"
+                        message = f"Seite {page_number:04d} gespeichert"
 
                     update_status(
                         save_job_status=save_job_status,
@@ -1513,15 +1405,14 @@ def run_download_job(
                         status="running",
                         message=message,
                         saved_count=saved_count,
-                        current_page=source_page_num,
+                        current_page=page_number,
                         total_pages_target=total_pages_to_fetch,
                         start_page=requested_start_page,
                         end_page=requested_end_page,
                     )
                 else:
                     failed_pages.append({
-                        "local_page_number": local_page_num,
-                        "source_page_number": source_page_num,
+                        "page_number": page_number,
                         "source_url": current_page_url,
                         "initial_reason": reason,
                     })
@@ -1530,9 +1421,9 @@ def run_download_job(
                         job_id=job_id,
                         book_name=book_name,
                         status="running",
-                        message=f"Quellseite {source_page_num} fehlgeschlagen, wird später erneut versucht.",
+                        message=f"Quellseite {page_number} fehlgeschlagen, wird später erneut versucht.",
                         saved_count=saved_count,
-                        current_page=source_page_num,
+                        current_page=page_number,
                         total_pages_target=total_pages_to_fetch,
                         start_page=requested_start_page,
                         end_page=requested_end_page,
@@ -1552,7 +1443,7 @@ def run_download_job(
                     status="running",
                     message=f"Starte Nachladeversuche für {len(failed_pages)} Fehlerseiten ...",
                     saved_count=saved_count,
-                    current_page=failed_pages[0]["source_page_number"],
+                    current_page=failed_pages[0]["page_number"],
                     total_pages_target=total_pages_to_fetch,
                     start_page=requested_start_page,
                     end_page=requested_end_page,
@@ -1600,13 +1491,15 @@ def run_download_job(
             create_pdf(book_dir, pdf_path)
 
             finish_message = "Download abgeschlossen."
-            if attached:
-                finish_message = "Download abgeschlossen, Seiten wurden an bestehendes Buch angehängt."
+
             if remaining_failed:
                 finish_message = (
                     f"Download abgeschlossen, aber {len(remaining_failed)} Seiten "
                     f"konnten nicht nachgeladen werden."
                 )
+
+            if saved_count == 0 and not remaining_failed:
+                finish_message = "Download abgeschlossen, alle Seiten waren bereits vorhanden."
 
             update_status(
                 save_job_status=save_job_status,
