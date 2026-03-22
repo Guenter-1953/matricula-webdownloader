@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Personen – {{ book_name }}</title>
+<link rel="stylesheet" href="/static/style.css">
+
+<style>
+body { margin:0; }
+.layout { display:flex; }
+
+.sidebar {
+    position:fixed;
+    left:0;
+    top:0;
+    width:240px;
+    height:100vh;
+    background:#f4f4f4;
+    padding:20px;
+    border-right:1px solid #ddd;
+}
+
+.content {
+    margin-left:260px;
+    padding:20px;
+    width:100%;
+}
+
+.person-list li {
+    padding:8px;
+    border-bottom:1px solid #eee;
+}
+</style>
+</head>
+
+<body>
+
+<div class="layout">
+
+<aside class="sidebar">
+    <h1>Kirchenbuch Tool</h1>
+    <nav>
+        <a href="/">Start</a>
+        <a href="/books">Bücher</a>
+        <a href="/books/{{ book_name }}">Zum Buch</a>
+    </nav>
+</aside>
+
+<main class="content">
+
+<section class="card">
+    <h2>Personen</h2>
+    <p>{{ persons|length }} Namen gefunden</p>
+</section>
+
+<section class="card">
+    <input type="text" id="suche" placeholder="Name suchen...">
+
+    <ul id="liste">
+        {% for p in persons %}
+        <li data-name="{{ p.name|lower }}">
+            <a href="/book/{{ book_name }}/persons/{{ p.name|urlencode }}">
+                {{ p.name }}
+            </a>
+            ({{ p.count }} Einträge)
+        </li>
+        {% endfor %}
+    </ul>
+</section>
+
+</main>
+</div>
+
+<script>
+document.getElementById("suche").addEventListener("keyup", function() {
+    let v = this.value.toLowerCase();
+    document.querySelectorAll("#liste li").forEach(li=>{
+        li.style.display = li.dataset.name.includes(v) ? "" : "none";
+    });
+});
+</script>
+
+</body>
+</html>
