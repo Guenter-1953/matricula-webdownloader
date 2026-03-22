@@ -6,15 +6,10 @@
     <link rel="stylesheet" href="/static/style.css">
 
     <style>
-        body {
-            margin: 0;
-        }
+        body { margin: 0; }
 
-        .layout {
-            display: flex;
-        }
+        .layout { display: flex; }
 
-        /* 🔥 Sidebar bleibt stehen */
         .sidebar {
             position: fixed;
             left: 0;
@@ -27,17 +22,6 @@
             border-right: 1px solid #ddd;
         }
 
-        .sidebar h1 {
-            font-size: 1.3rem;
-            margin-bottom: 20px;
-        }
-
-        .sidebar a {
-            display: block;
-            margin-bottom: 10px;
-        }
-
-        /* 👉 Content scrollt rechts */
         .content {
             margin-left: 260px;
             padding: 20px;
@@ -61,11 +45,6 @@
             border-radius: 6px;
         }
 
-        .top-actions {
-            margin-top: 10px;
-            margin-bottom: 10px;
-        }
-
         .btn {
             display: inline-block;
             padding: 8px 12px;
@@ -73,7 +52,6 @@
             background: #2a84c9;
             color: white;
             text-decoration: none;
-            font-size: 0.9rem;
         }
 
         .btn:hover {
@@ -104,12 +82,9 @@
                 <p><a href="/pdf/{{ pdf_name }}" target="_blank">PDF öffnen</a></p>
             {% endif %}
 
-            <div class="top-actions">
-                <!-- 🔥 NEU: Personen -->
-                <a href="/book/{{ book_name }}/persons" class="btn">
-                    👤 Personen anzeigen
-                </a>
-            </div>
+            <a href="/book/{{ book_name }}/persons" class="btn">
+                👤 Personen anzeigen
+            </a>
         </section>
 
         <section class="card">
@@ -119,7 +94,7 @@
                 {% for image in images %}
                     <div class="thumb">
                         <a href="/books/{{ book_name }}/{{ image }}" target="_blank">
-                            <img src="/books/{{ book_name }}/{{ image }}" alt="{{ image }}">
+                            <img src="/books/{{ book_name }}/{{ image }}">
                         </a>
                         <div>{{ image }}</div>
                     </div>
