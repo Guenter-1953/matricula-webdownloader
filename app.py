@@ -557,6 +557,12 @@ def api_jobs():
     return jsonify(jobs)
 
 
+@app.route("/api/books")
+def api_books():
+    books = load_books()
+    return jsonify(books)
+
+
 @app.route("/books/<book_name>")
 def show_book(book_name):
     book_dir = BOOKS_DIR / book_name
