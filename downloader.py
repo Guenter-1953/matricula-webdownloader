@@ -398,11 +398,42 @@ def enrich_meta_from_dom(meta: dict, dom_candidates: dict) -> dict:
     return meta
 
 
+def _cut_at_known_following_fields(text: str) -> str:
+    if not text:
+        return ""
+
+    stop_patterns = [
+        r"\bPfarre/Ort\b",
+        r"\bSignatur\b",
+        r"\bBuchtyp\b",
+        r"\bDatum von\b",
+        r"\bDatum bis\b",
+        r"\bKontakt\b",
+        r"\bMatricula\b",
+        r"\b\d{2}-[A-Za-zÄÖÜäöü]+-\d{4}\b",
+    ]
+
+    result = text
+    earliest = None
+
+    for pattern in stop_patterns:
+        match = re.search(pattern, result, re.IGNORECASE)
+        if match:
+            pos = match.start()
+            if earliest is None or pos < earliest:
+                earliest = pos
+
+    if earliest is not None:
+        result = result[:earliest]
+
+    return normalize_whitespace(result)
+
+
 def extract_field_from_title_text(text: str, field_name: str) -> str | None:
     if not text:
         return None
 
-    pattern = rf"{re.escape(field_name)}\s+([^|]+)"
+    pattern = rf"{re.escape(field_name)}\s+(.*)"
     match = re.search(pattern, text, re.IGNORECASE)
     if not match:
         return None
@@ -411,12 +442,8 @@ def extract_field_from_title_text(text: str, field_name: str) -> str | None:
     if not value:
         return None
 
-    value = re.split(r"\b0\d-[A-Za-zÄÖÜäöü]+-\d{4}\b", value)[0].strip()
-    value = re.split(r"\bKontakt\b", value, flags=re.IGNORECASE)[0].strip()
-    value = re.split(r"\bMatricula\b", value, flags=re.IGNORECASE)[0].strip()
-
-    cleaned = normalize_whitespace(value)
-    return cleaned or None
+    value = _cut_at_known_following_fields(value)
+    return value or None
 
 
 def parse_from_page_title(meta: dict, page_title: str) -> dict:
@@ -431,22 +458,20 @@ def parse_from_page_title(meta: dict, page_title: str) -> dict:
 
         if " - " in first:
             first_left, first_right = first.rsplit(" - ", 1)
-            if not meta.get("buchtyp") or normalize_compare_value(meta.get("buchtyp")) == "kirchenbuch":
-                if first_left:
-                    meta["buchtyp"] = first_left
-            if not meta.get("signatur") or normalize_compare_value(meta.get("signatur")) in {"unbekannt", ""}:
-                if first_right:
-                    meta["signatur"] = first_right
 
-        current_place = normalize_compare_value(meta.get("pfarre_ort"))
-        if current_place in {"de_ful3_jdw", "unbekannt", ""} and second:
+            if first_left:
+                meta["buchtyp"] = first_left
+
+            if first_right:
+                meta["signatur"] = first_right
+
+        if second:
             meta["pfarre_ort"] = second
 
         if len(parts) >= 3:
             third = parts[2]
-            if not meta.get("bistum") or normalize_compare_value(meta.get("bistum")) in {"fulda", "unbekannt", ""}:
-                if third:
-                    meta["bistum"] = third
+            if third:
+                meta["bistum"] = third
 
     return meta
 
@@ -455,17 +480,24 @@ def improve_book_meta_from_title(meta: dict, dom_candidates: dict) -> dict:
     text = meta.get("dom_title_text", "") or ""
     page_title = normalize_whitespace(dom_candidates.get("page_title", "") or "")
 
-    place_value = extract_field_from_title_text(text, "Pfarre/Ort")
-    if place_value:
-        meta["pfarre_ort"] = place_value
+    # Erst das kurze, saubere page_title auswerten
+    meta = parse_from_page_title(meta, page_title)
 
-    type_value = extract_field_from_title_text(text, "Buchtyp")
-    if type_value:
-        meta["buchtyp"] = type_value
+    # Danach nur fehlende/ergänzende Felder aus dem langen Text holen
+    if not meta.get("pfarre_ort") or normalize_compare_value(meta.get("pfarre_ort")) in {"de_ful3_jdw", "unbekannt", ""}:
+        place_value = extract_field_from_title_text(text, "Pfarre/Ort")
+        if place_value:
+            meta["pfarre_ort"] = place_value
 
-    signatur_value = extract_field_from_title_text(text, "Signatur")
-    if signatur_value:
-        meta["signatur"] = signatur_value
+    if not meta.get("signatur") or normalize_compare_value(meta.get("signatur")) in {"unbekannt", ""}:
+        signatur_value = extract_field_from_title_text(text, "Signatur")
+        if signatur_value:
+            meta["signatur"] = signatur_value
+
+    if not meta.get("buchtyp") or normalize_compare_value(meta.get("buchtyp")) in {"kirchenbuch", "unbekannt", ""}:
+        type_value = extract_field_from_title_text(text, "Buchtyp")
+        if type_value:
+            meta["buchtyp"] = type_value
 
     match_from = re.search(r"Datum von\s+.*?(\d{4})", text, re.IGNORECASE)
     match_to = re.search(r"Datum bis\s+.*?(\d{4})", text, re.IGNORECASE)
@@ -474,8 +506,6 @@ def improve_book_meta_from_title(meta: dict, dom_candidates: dict) -> dict:
         meta["datum_von"] = match_from.group(1)
     if match_to:
         meta["datum_bis"] = match_to.group(1)
-
-    meta = parse_from_page_title(meta, page_title)
 
     log(f"Verbesserte Metadaten aus Titelseite: {meta}")
     return meta
