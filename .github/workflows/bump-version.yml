@@ -19,10 +19,10 @@ jobs:
 
       - name: Version erhöhen
         run: |
-          if [ -f app/utils/bump_version.py ]; then
-            python app/utils/bump_version.py
+          if [ -f utils/bump_version.py ]; then
+            python utils/bump_version.py
           else
-            echo "app/utils/bump_version.py nicht gefunden - Workflow wird übersprungen."
+            echo "utils/bump_version.py nicht gefunden - Workflow wird beendet."
             exit 1
           fi
 
