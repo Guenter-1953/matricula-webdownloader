@@ -156,32 +156,6 @@
     color: #666;
 }
 
-.page-range-row {
-    display: flex;
-    justify-content: flex-start;
-    align-items: flex-end;
-    gap: 20px;
-    flex-wrap: wrap;
-    margin-top: 8px;
-}
-
-.page-range-field {
-    flex: 0 0 auto;
-    min-width: 220px;
-}
-
-.page-range-field input {
-    width: 220px;
-    max-width: 100%;
-    box-sizing: border-box;
-}
-
-.page-range-hint {
-    margin-top: 10px;
-    font-size: 0.92rem;
-    color: #666;
-}
-
 @keyframes pulseSoft {
     0% { transform: scale(1); opacity: 1; }
     50% { transform: scale(1.15); opacity: 0.65; }
@@ -246,21 +220,11 @@
             <label>Name für die Ablage:</label>
             <input type="text" id="book_name" name="book_name" placeholder="z. B. Wien_Taufen_1780_1790" autocomplete="off">
 
-            <div class="page-range-row">
-                <div class="page-range-field">
-                    <label for="start_page">Startseite:</label>
-                    <input type="number" id="start_page" name="start_page" min="1" step="1" placeholder="z. B. 5" autocomplete="off">
-                </div>
+            <label>Startseite (optional):</label>
+            <input type="number" id="start_page" name="start_page" min="1" placeholder="z. B. 1">
 
-                <div class="page-range-field">
-                    <label for="end_page">Endseite:</label>
-                    <input type="number" id="end_page" name="end_page" min="1" step="1" placeholder="z. B. 8" autocomplete="off">
-                </div>
-            </div>
-
-            <div class="page-range-hint">
-                Leer lassen = Standardlauf mit 15 Seiten. Nur Startseite setzen = ab dort 15 Seiten. Start- und Endseite setzen = genau dieser Bereich.
-            </div>
+            <label>Endseite (optional):</label>
+            <input type="number" id="end_page" name="end_page" min="1" placeholder="z. B. 5">
 
             <button type="submit">Download starten</button>
         </form>
@@ -297,12 +261,6 @@
                         <span class="job-stat">Läuft seit: {{ job.runtime_text or "-" }}</span>
                         <span class="job-stat">Ø / Seite: {{ job.avg_seconds_per_page_text or "-" }}</span>
                         <span class="job-stat">Restzeit: {{ job.estimated_remaining_text or "-" }}</span>
-                        {% if job.start_page %}
-                        <span class="job-stat">
-                            Bereich:
-                            {{ job.start_page }}{% if job.end_page %}–{{ job.end_page }}{% endif %}
-                        </span>
-                        {% endif %}
                     </div>
 
                     <div class="job-meta">
@@ -344,7 +302,7 @@
             </ul>
         </div>
         {% else %}
-        <p>Noch keine Bücher gespeichert.</p>
+        <p id="noBooksText">Noch keine Bücher gespeichert.</p>
         {% endif %}
     </section>
 
@@ -379,7 +337,7 @@
             </ul>
         </div>
         {% else %}
-        <p>Noch keine Bücher gespeichert.</p>
+        <p id="noBooksText">Noch keine Bücher gespeichert.</p>
         {% endif %}
     </section>
     {% endif %}
@@ -446,12 +404,6 @@
                         <span class="job-stat">Läuft seit: {{ job.runtime_text or "-" }}</span>
                         <span class="job-stat">Ø / Seite: {{ job.avg_seconds_per_page_text or "-" }}</span>
                         <span class="job-stat">Restzeit: {{ job.estimated_remaining_text or "-" }}</span>
-                        {% if job.start_page %}
-                        <span class="job-stat">
-                            Bereich:
-                            {{ job.start_page }}{% if job.end_page %}–{{ job.end_page }}{% endif %}
-                        </span>
-                        {% endif %}
                     </div>
 
                     <div class="job-meta">
@@ -482,13 +434,8 @@
         if (!urlField || !nameField) return;
         localStorage.setItem("matricula_book_url", urlField.value);
         localStorage.setItem("matricula_book_name", nameField.value);
-
-        if (startPageField) {
-            localStorage.setItem("matricula_start_page", startPageField.value);
-        }
-        if (endPageField) {
-            localStorage.setItem("matricula_end_page", endPageField.value);
-        }
+        localStorage.setItem("matricula_start_page", startPageField ? startPageField.value : "");
+        localStorage.setItem("matricula_end_page", endPageField ? endPageField.value : "");
     }
 
     function restoreFormData() {
@@ -522,13 +469,8 @@
         restoreFormData();
         urlField.addEventListener("input", saveFormData);
         nameField.addEventListener("input", saveFormData);
-
-        if (startPageField) {
-            startPageField.addEventListener("input", saveFormData);
-        }
-        if (endPageField) {
-            endPageField.addEventListener("input", saveFormData);
-        }
+        if (startPageField) startPageField.addEventListener("input", saveFormData);
+        if (endPageField) endPageField.addEventListener("input", saveFormData);
 
         form.addEventListener("submit", function () {
             localStorage.removeItem("matricula_book_url");
@@ -597,11 +539,6 @@
                 const avgText = job.avg_seconds_per_page_text || "-";
                 const remainingText = job.estimated_remaining_text || "-";
 
-                let rangeText = "";
-                if (job.start_page) {
-                    rangeText = `<span class="job-stat">Bereich: ${escapeHtml(job.start_page)}${job.end_page ? "–" + escapeHtml(job.end_page) : ""}</span>`;
-                }
-
                 return `
                     <div class="job-item status-${escapeHtml(status)}">
                         <div class="job-top">
@@ -624,7 +561,6 @@
                             <span class="job-stat">Läuft seit: ${escapeHtml(runtimeText)}</span>
                             <span class="job-stat">Ø / Seite: ${escapeHtml(avgText)}</span>
                             <span class="job-stat">Restzeit: ${escapeHtml(remainingText)}</span>
-                            ${rangeText}
                         </div>
 
                         <div class="job-meta">
@@ -634,6 +570,49 @@
                 `;
             }).join("");
         });
+    }
+
+    function renderBooks(books) {
+        const list = document.getElementById("bookList");
+        const noBooksText = document.getElementById("noBooksText");
+        if (!list) return;
+
+        if (!books || !books.length) {
+            list.innerHTML = "";
+            if (noBooksText) {
+                noBooksText.style.display = "";
+            }
+            return;
+        }
+
+        if (noBooksText) {
+            noBooksText.style.display = "none";
+        }
+
+        list.innerHTML = books.map(function (book) {
+            const pdfLink = book.pdf_exists
+                ? ` — <a href="/pdf/${encodeURIComponent(book.pdf_name)}" target="_blank">PDF öffnen</a>`
+                : "";
+
+            return `
+                <li data-book="${escapeHtml((book.name || "").toLowerCase())}">
+                    <a href="/books/${encodeURIComponent(book.name || "")}">${escapeHtml(book.name || "")}</a>
+                    — Bilder: ${escapeHtml(book.image_count ?? 0)}
+                    ${pdfLink}
+                </li>
+            `;
+        }).join("");
+
+        const searchInput = document.getElementById("bookSearch");
+        if (searchInput && searchInput.value) {
+            const value = searchInput.value.toLowerCase();
+            const items = document.querySelectorAll("#bookList li");
+
+            items.forEach(function (item) {
+                const text = (item.getAttribute("data-book") || "").toLowerCase();
+                item.style.display = text.includes(value) ? "" : "none";
+            });
+        }
     }
 
     async function refreshJobs() {
@@ -648,10 +627,23 @@
         }
     }
 
+    async function refreshBooks() {
+        try {
+            const response = await fetch("/api/books", { cache: "no-store" });
+            if (!response.ok) return;
+
+            const books = await response.json();
+            renderBooks(books);
+        } catch (err) {
+            console.warn("Bücher-Refresh fehlgeschlagen", err);
+        }
+    }
+
     {% if auto_refresh %}
     setInterval(function () {
         if (!isTyping()) {
             refreshJobs();
+            refreshBooks();
         }
     }, 2000);
     {% endif %}
