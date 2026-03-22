@@ -19,10 +19,11 @@ jobs:
 
       - name: Version erhöhen
         run: |
-          if [ -f utils/bump_version.py ]; then
-            python utils/bump_version.py
+          if [ -f app/utils/bump_version.py ]; then
+            python app/utils/bump_version.py
           else
-            echo "utils/bump_version.py nicht gefunden - Workflow wird übersprungen."
+            echo "app/utils/bump_version.py nicht gefunden - Workflow wird übersprungen."
+            exit 1
           fi
 
       - name: Änderungen committen
@@ -33,7 +34,7 @@ jobs:
           if git diff --quiet; then
             echo "Keine Änderungen zum Committen."
           else
-            git add .
+            git add version.json
             git commit -m "Bump Version"
             git push
           fi
